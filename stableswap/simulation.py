@@ -1,4 +1,4 @@
-class Curve:
+class StableSwap:
 
     """
     Python model of Curve pool math.
@@ -21,6 +21,7 @@ class Curve:
             self.p = [10 ** 18] * n
         if isinstance(D, list):
             self.x = D
+            D = sum(D)
         else:
             self.x = [D // n * 10 ** 18 // _p for _p in self.p]
         self.tokens = tokens or D
