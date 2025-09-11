@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.11.26"
+__generated_with = "0.15.2"
 app = marimo.App(width="medium")
 
 
@@ -16,7 +16,7 @@ def _(mo):
     n_lockers = 2  # Change if necessary
     lockers = [
         (
-            mo.ui.number(start=0, stop=100, step=0.01, value=52.6 if i == 0 else 0, label="veCRV power (%)"),
+            mo.ui.number(start=0, stop=100, step=0.01, value=52.86 if i == 0 else 0, label="veCRV power (%)"),
             mo.ui.number(start=0, stop=100, step=0.01, value=17 if i == 0 else 100, label="fee (%)"),
             mo.ui.number(start=0, stop=100, step=0.01, value=0, label="gauge share (%)"),
         )
@@ -26,12 +26,19 @@ def _(mo):
     my_share = mo.ui.number(start=0, stop=100, step=0.01, value=0, label="My gauge share (%)")
     mo.md(
         '  \n'.join([
-            "veCRV balances be checked in [explorer](https://etherscan.io/token/0x5f3b5DfEb7B28CDbD7FAba78963EE202a494e2A2#balances) or dedicated [L2 balances page](https://curvefi.github.io/storage-proofs/). Update values wrt your case, increase *n* in the code slot if needed.",
+            "veCRV balances be checked in [explorer](https://etherscan.io/token/0x5f3b5DfEb7B28CDbD7FAba78963EE202a494e2A2#balances) or dedicated [L2 balances page](https://curvefi.github.io/storage-proofs/). Update values wrt your case, increase *n* in the code slot if needed.  ",
+            "",
+            "| Locker   | Common Fees | veCRV Balance |  ",
+            "|:---------|-------------|---------------|  ",
+            "| Convex   | 17%         | 52.86%        |  ",
+            "| StakeDAO | 15%         | 14.84%        |  ",
+            "| Yearn    | 10%         | 10.48%        |  ",
+            "\n",
             *[f"Locker {i}: {locker[0]} {locker[1]} {locker[2]}" for i, locker in enumerate(lockers)],
             f"{my_vecrv} {my_share}",
         ])
     )
-    return lockers, my_share, my_vecrv, n_lockers
+    return lockers, my_share, my_vecrv
 
 
 @app.cell
@@ -117,19 +124,7 @@ def _(lockers, mo, my_share, my_vecrv, np):
             f"Share of total gauge profit: {100 * profit:.2f}%",
         ])
     )
-    return (
-        List,
-        Tuple,
-        calc_distribution,
-        distribution,
-        lp_share_to_distribute,
-        math,
-        minimize,
-        my_profit,
-        profit,
-        self_alloc,
-        working_balance,
-    )
+    return
 
 
 @app.cell
