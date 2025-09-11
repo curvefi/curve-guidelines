@@ -1,0 +1,10 @@
+[project]
+name = "curve-guidelines"
+version = "0.1.0"
+description = "Guidelines for Curve project/parameters setups"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "marimo>=0.15.2",
+    "titanoboa>=0.2.7",
+]

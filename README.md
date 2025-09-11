@@ -1,6 +1,7 @@
 # Run
 ```shell
 uv sync
-export PYTHONPATH="${PYTHONPATH}:."
+source .venv/bin/activate
+export PYTHONPATH="${PYTHONPATH}:."  # Allow relative paths
 uv run marimo edit
 ```
