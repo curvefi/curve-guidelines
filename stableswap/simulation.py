@@ -109,21 +109,21 @@ class StableSwap:
     def dy(self, i, j, dx, account_fees=True):
         # dx and dy are in underlying units
         xp = self.xp()
-        dy = xp[j] - self.y(i, j, xp[i] + dx)
+        dy = xp[j] - self.y(i, j, xp[i] + (dx * self.p[i] // 10 ** 18))
         if not account_fees:
             return dy
-        return dy - dy * self.fee // 10 ** 10
+        return (dy - dy * self.fee // 10 ** 10) * 10 ** 18 // self.p[j]
 
     def exchange(self, i, j, dx):
         xp = self.xp()
-        x = xp[i] + dx
+        x = xp[i] + (dx * self.p[i] // 10 ** 18)
         y = self.y(i, j, x)
         dy = xp[j] - y
         fee = dy * self.fee // 10 ** 10
         assert dy > 0
         self.x[i] = x * 10 ** 18 // self.p[i]
         self.x[j] = (y + fee) * 10 ** 18 // self.p[j]
-        return dy - fee
+        return (dy - fee) * 10 ** 18 // self.p[j]
 
     def add_liquidity(self, amounts, update_values=False):
         _fee = self.fee * self.n // (4 * (self.n - 1))
