@@ -38,7 +38,7 @@ def _(mo, skew):
 @app.cell
 def _(A, D, StableSwap, copy, mo, n, px, skew):
     # Assuming p = price_oracle
-    MAX_P_FACTOR = 1.25  # Factor to limit price changes
+    MAX_P_FACTOR = 1.75  # Factor to limit price changes
     dx = D // 10_000
     dy = 0
 
@@ -117,7 +117,40 @@ def _(mo, points, px):
 
 
 @app.cell
+def _(mo, points, px):
+    tokens_plot = mo.ui.plotly(
+        px.line(
+            [{"price": point["prices"][1] / 10 ** 18, "Token": point["balances"][0] / 10 ** 18, "Skewed token": point["balances"][1] / 10 ** 18} for point in points],
+            x="Skewed token",
+            y="Token",
+            title="Balances",
+            hover_data=["price"],
+        ).update_layout(
+            yaxis_scaleanchor="x",  # <-- ensures 1:1 aspect ratio
+            yaxis_scaleratio=1,
+            xaxis=dict(range=[0, 1_000_000]),  # set both to start from 0
+            yaxis=dict(range=[0, 1_000_000]),
+            width=600,               # square figure
+            height=600
+        )
+    )
+
+    tokens_plot
+    return
+
+
+@app.cell
 def _():
+    # density_plot = mo.ui.plotly(
+    #     px.line(
+    #         [],
+    #         x="price",
+    #         y=["normal density", "density"],
+    #         title="Skewed density",
+    #     )
+    # )
+
+    # density_plot
     return
 
 
