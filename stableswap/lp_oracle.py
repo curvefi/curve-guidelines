@@ -25,11 +25,7 @@ def _(mo):
 
 @app.cell
 def _(A, mo):
-    mo.md(
-        f"""
-        {A}  \n
-        """
-    )
+    mo.md(f"""{A}  \n""")
     return
 
 
