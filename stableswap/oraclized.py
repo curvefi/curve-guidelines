@@ -10,7 +10,7 @@ def _(mo):
         r"""
     # Oraclized StableSwap
     Oraclized StableSwap is a pool variant where the target price of one asset is scaled by an
-    external oracle. Pools like stETH/ETH work this way: ETH is the base asset, and the
+    external oracle. Pools like wstETH/ETH work this way: ETH is the base asset, and the
     staking token trades around the oracle price.
     """
     )
@@ -332,7 +332,13 @@ def _(
         )
 
     price_points_pct, initial_prices, profit_grid, d_grid, sandwich_loss_grid, trade_shares, best_profit, max_loss, profit_line, d_line, sandwich_loss_line = build_series()
-    return d_line, initial_prices, price_points_pct, profit_line, sandwich_loss_line
+    return (
+        d_line,
+        initial_prices,
+        price_points_pct,
+        profit_line,
+        sandwich_loss_line,
+    )
 
 
 @app.cell
