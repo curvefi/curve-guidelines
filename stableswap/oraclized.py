@@ -94,7 +94,7 @@ def _(mo):
 @app.cell
 def _(mo):
     A = mo.ui.number(start=10, stop=200_000, step=10, value=200, label="A")
-    fee_pct = mo.ui.number(start=0.01, stop=0.1, step=0.001, value=0.01, label="Fee, %")
+    fee_pct = mo.ui.number(start=0.0001, stop=1, step=0.0001, value=0.01, label="Fee, %")
     trade_steps = mo.ui.slider(start=11, stop=81, step=2, value=11, label="Trade points (log, internal)")
     max_change_pct = mo.ui.slider(start=0.03, stop=3.0, step=0.01, value=0.05, label="Max |oracle change|, %", show_value=True)
     initial_price_steps = mo.ui.slider(start=11, stop=81, step=2, value=11, label="Initial price points (internal)")
