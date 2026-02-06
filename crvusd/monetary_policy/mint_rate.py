@@ -16,6 +16,60 @@ def _():
 
 
 @app.cell
+def _(apy, apy_fig, mo, pk_debt, prices, rate0, sigma, target_debt_fraction):
+    mo.vstack([
+        mo.md(f"""
+    # crvUSD Rate simulator
+    rate when PegKeepers are filled: {apy(1.0, pk_debt=1.0):.2f}%
+
+    rate at balance: {apy(1.0, pk_debt=target_debt_fraction.value):.2f}%  
+
+    PegKeepers empty:  
+    1.0 -> {apy(1.0, pk_debt=0):.2f}%  
+    0.999 -> {apy(0.999, pk_debt=0):.2f}%  
+    0.998 -> {apy(0.998, pk_debt=0):.2f}%  
+    0.995 -> {apy(0.995, pk_debt=0):.2f}%  
+    0.992 -> {apy(0.992, pk_debt=0):.2f}%  
+    0.99 -> {apy(0.99, pk_debt=0):.2f}%  
+    0.98 -> {apy(0.98, pk_debt=0):.2f}%  
+    """),
+        mo.hstack([rate0, sigma, target_debt_fraction, pk_debt]),
+        prices,
+        apy_fig,
+    ])
+    return
+
+
+@app.cell
+def _(mo):
+    rate0 = mo.ui.number(value=3.66, step=0.01, label="rate0")
+    sigma = mo.ui.number(value=0.007, step=0.0001, label="sigma")
+    target_debt_fraction = mo.ui.slider(0.1, 1.0, value=0.26, step=0.01, show_value=True, label="target debt fraction")
+    pk_debt = mo.ui.slider(0.00, 1.0, value=0.26, step=0.01, label="PegKeeper Debt")
+
+    prices = mo.ui.range_slider(start=0.8, stop=1.2, step=0.0001, value=(0.98, 1.0))
+    return pk_debt, prices, rate0, sigma, target_debt_fraction
+
+
+@app.cell
+def _(np, pk_debt, prices, px, rate0, sigma, target_debt_fraction):
+    prices_space = np.linspace(start=prices.value[0], stop=prices.value[1], num=50)
+    def apy(price, rate0=rate0.value, sigma=sigma.value, pk_debt=pk_debt.value, target_debt_fraction=target_debt_fraction.value):
+        return 100 * ((1 + rate0 * np.exp((1.0 - price) / sigma - pk_debt / target_debt_fraction) * 1e-9) ** (365 * 24 * 60 * 60) - 1)
+
+    apy_p = {
+        "price": prices_space,
+        "apy": apy(prices_space),
+    }
+    apy_fig = px.line(
+        apy_p,
+        x="price",
+        y="apy",
+    )
+    return apy, apy_fig
+
+
+@app.cell
 def _(mo):
     mo.md(
         """
@@ -42,7 +96,7 @@ def _(mo):
             else:
               s(x) = t + (1 - t) * ((x - t) / (1 - t))^p
             ```
-        
+
             This keeps `x = 0`, `x = t`, and `x = 1` fixed while pulling intermediate values closer to the target.
             Higher `p` causes stronger concentration near the target.
 
@@ -79,74 +133,6 @@ def _(mo):
 def _(mo):
     mo.md(r"""## Implementation""")
     return
-
-
-@app.cell
-def _(mo):
-    r0 = mo.ui.number(value=1.0, step=0.01, label="r0 (base rate)")
-    target = mo.ui.slider(0.01, 0.99, value=0.40, step=0.01, label="target debt fraction (t)")
-    squash_power = mo.ui.slider(
-        0.0, 10.0,
-        value=2.0,
-        step=0.1,
-        label="squash power (1 = original, 2 = square)"
-    )
-    squash_weight = mo.ui.slider(
-        0.0, 1.0,
-        value=1.0,
-        step=0.01,
-        label="squash weight (0 = original, 1 = full squash)"
-    )
-    return r0, squash_power, squash_weight, target
-
-
-@app.cell
-def _(math, r0, squash_power, squash_weight, target):
-    # Original: r0 * exp(-x/t)
-    def rate_original(x):
-        r0v = float(r0.value)
-        tv  = float(target.value)
-        return r0v * math.exp(-(x / tv))
-
-    def rate_squashed(x):
-        tv  = float(target.value)
-        w = float(squash_weight.value)
-        p = float(squash_power.value)
-
-        # power-based squash around target
-        def squash(x):
-            if x <= tv:
-                # left side: normalize to [0,1], p-power, map back
-                y  = (tv - x) / tv  # in [0,1]
-                yp = y ** p
-                return tv - yp * tv
-            else:
-                # right side: normalize to [0,1], p-power, map back
-                z  = (x - tv) / (1.0 - tv)  # in [0,1]
-                zp = z ** p
-                return tv + zp * (1.0 - tv)
-        xs = squash(x)
-        # convex combination: x' = (1-w)*x + w*xs
-        xs = (1.0 - w) * x + w * xs
-        return rate_original(xs)
-    return rate_original, rate_squashed
-
-
-@app.cell
-def _(np, pd, rate_original, rate_squashed):
-    xs = np.linspace(0.0, 1.0, 2001)
-
-    rows = []
-
-    for x in xs:
-        rows.append({
-            "debt_fraction": x,
-            "original":      rate_original(x),
-            "rate_squashed": rate_squashed(x),
-        })
-
-    df = pd.DataFrame(rows)
-    return (df,)
 
 
 @app.cell
@@ -301,6 +287,74 @@ def _(
 @app.cell
 def _():
     return
+
+
+@app.cell
+def _(mo):
+    r0 = mo.ui.number(value=1.0, step=0.01, label="r0 (base rate)")
+    target = mo.ui.slider(0.01, 0.99, value=0.40, step=0.01, label="target debt fraction (t)")
+    squash_power = mo.ui.slider(
+        0.0, 10.0,
+        value=2.0,
+        step=0.1,
+        label="squash power (1 = original, 2 = square)"
+    )
+    squash_weight = mo.ui.slider(
+        0.0, 1.0,
+        value=1.0,
+        step=0.01,
+        label="squash weight (0 = original, 1 = full squash)"
+    )
+    return r0, squash_power, squash_weight, target
+
+
+@app.cell
+def _(math, r0, squash_power, squash_weight, target):
+    # Original: r0 * exp(-x/t)
+    def rate_original(x):
+        r0v = float(r0.value)
+        tv  = float(target.value)
+        return r0v * math.exp(-(x / tv))
+
+    def rate_squashed(x):
+        tv  = float(target.value)
+        w = float(squash_weight.value)
+        p = float(squash_power.value)
+
+        # power-based squash around target
+        def squash(x):
+            if x <= tv:
+                # left side: normalize to [0,1], p-power, map back
+                y  = (tv - x) / tv  # in [0,1]
+                yp = y ** p
+                return tv - yp * tv
+            else:
+                # right side: normalize to [0,1], p-power, map back
+                z  = (x - tv) / (1.0 - tv)  # in [0,1]
+                zp = z ** p
+                return tv + zp * (1.0 - tv)
+        xs = squash(x)
+        # convex combination: x' = (1-w)*x + w*xs
+        xs = (1.0 - w) * x + w * xs
+        return rate_original(xs)
+    return rate_original, rate_squashed
+
+
+@app.cell
+def _(np, pd, rate_original, rate_squashed):
+    xs = np.linspace(0.0, 1.0, 2001)
+
+    rows = []
+
+    for x in xs:
+        rows.append({
+            "debt_fraction": x,
+            "original":      rate_original(x),
+            "rate_squashed": rate_squashed(x),
+        })
+
+    df = pd.DataFrame(rows)
+    return (df,)
 
 
 if __name__ == "__main__":
