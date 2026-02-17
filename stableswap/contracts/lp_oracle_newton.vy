@@ -1,9 +1,5 @@
 # pragma version 0.4.3
 
-interface IStableSwapPool:
-    def A() -> uint256: view
-    def price_oracle() -> uint256: view
-
 
 # =============================================================================
 # StableSwap (n=2), D=1, fixed-point WAD=1e18
@@ -59,8 +55,8 @@ A_PRECISION: constant(uint256) = 100
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
-BISECT_STEPS: constant(uint256) = 10
-SECANT_STEPS: constant(uint256) = 256
+BISECT_STEPS: constant(uint256) = 9
+NEWTON_STEPS: constant(uint256) = 256
 PRICE_TOL: constant(uint256) = 10**4
 
 
@@ -143,7 +139,7 @@ def _value_from_s(A_raw: uint256, p: uint256, sP: uint256) -> uint256:
 
 @internal
 @pure
-def _s_from_secant(A_raw: uint256, p: uint256) -> uint256:
+def _s_from_newton(A_raw: uint256, p: uint256) -> uint256:
     # Solve g(s)=0 where:
     #   g(s) = p(s) - p_target
     #   p_target = p
@@ -171,49 +167,49 @@ def _s_from_secant(A_raw: uint256, p: uint256) -> uint256:
             break
 
     p_i: int256 = convert(p, int256)
-    s0: uint256 = lo
-    g0: int256 = convert(plo, int256) - p_i
-    s1: uint256 = hi
-    g1: int256 = convert(phi, int256) - p_i
-    # g0 = g(s0), g1 = g(s1)
 
-    if convert(abs(g0), uint256) <= PRICE_TOL:
-        return s0
-    if convert(abs(g1), uint256) <= PRICE_TOL:
-        return s1
+    s: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
+    gs: int256 = convert(self._p_from_s(A_raw, s), int256) - p_i
 
-    # Secant step on g(s):
-    #   s2 = s1 - g1 * (s1 - s0) / (g1 - g0)
-    # Then safeguard s2 to stay inside (lo, hi).
-    for _: uint256 in range(SECANT_STEPS):
-        s2: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
-        dg: int256 = g1 - g0
+    s_prev: uint256 = lo
+    g_prev: int256 = convert(plo, int256) - p_i
+    # gs = g(s), g_prev = g(s_prev)
 
-        if dg != 0:
-            num: int256 = g1 * (convert(s1, int256) - convert(s0, int256))
-            step: int256 = unsafe_div(num, dg)
-            s2_i: int256 = convert(s1, int256) - step
-
-            if s2_i > convert(lo, int256) and s2_i < convert(hi, int256):
-                s2 = convert(s2_i, uint256)
-
-        p2: uint256 = self._p_from_s(A_raw, s2)
-        g2: int256 = convert(p2, int256) - p_i
-
-        if p2 > p:
-            lo = s2
-            plo = p2
-        else:
-            hi = s2
-            phi = p2
-
-        s0 = s1
-        g0 = g1
-        s1 = s2
-        g1 = g2
-
-        if unsafe_sub(hi, lo) <= 1 or convert(abs(g2), uint256) <= PRICE_TOL:
+    # Newton step for g(s)=0:
+    #   s_new = s - g(s)/g'(s)
+    # Finite-difference slope:
+    #   g'(s) ~ (g(s)-g_prev)/(s-s_prev)
+    # Therefore:
+    #   s_new ~ s - g(s)*(s-s_prev)/(g(s)-g_prev)
+    # If step exits bracket, fallback to midpoint.
+    for _: uint256 in range(NEWTON_STEPS):
+        if convert(abs(gs), uint256) <= PRICE_TOL or unsafe_sub(hi, lo) <= 1:
             break
+
+        s_new: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
+
+        dg: int256 = gs - g_prev
+        ds: int256 = convert(s, int256) - convert(s_prev, int256)
+        if dg != 0:
+            step: int256 = unsafe_div(gs * ds, dg)
+            s_new_i: int256 = convert(s, int256) - step
+            if s_new_i > convert(lo, int256) and s_new_i < convert(hi, int256):
+                s_new = convert(s_new_i, uint256)
+
+        p_new: uint256 = self._p_from_s(A_raw, s_new)
+        g_new: int256 = convert(p_new, int256) - p_i
+
+        if p_new > p:
+            lo = s_new
+            plo = p_new
+        else:
+            hi = s_new
+            phi = p_new
+
+        s_prev = s
+        g_prev = gs
+        s = s_new
+        gs = g_new
 
     if self._abs_diff(phi, p) < self._abs_diff(plo, p):
         return hi
@@ -222,41 +218,32 @@ def _s_from_secant(A_raw: uint256, p: uint256) -> uint256:
 
 @internal
 @pure
-def _portfolio_value_secant(A_raw: uint256, p: uint256) -> uint256:
+def _portfolio_value_newton(A_raw: uint256, p: uint256) -> uint256:
     self._assert_inputs(A_raw, p)
     # For p < 1 solve reciprocal branch and map back by symmetry.
     if p < WAD:
         p_inv: uint256 = self._inv_price(p)
-        return (p * self._value_from_s(A_raw, p_inv, self._s_from_secant(A_raw, p_inv))) // WAD
+        return (p * self._value_from_s(A_raw, p_inv, self._s_from_newton(A_raw, p_inv))) // WAD
 
-    sP: uint256 = self._s_from_secant(A_raw, p)
+    sP: uint256 = self._s_from_newton(A_raw, p)
     return self._value_from_s(A_raw, p, sP)
-
-
-@external
-@view
-def lp_oracle(_pool: address) -> uint256:
-    A_raw: uint256 = staticcall IStableSwapPool(_pool).A()
-    p: uint256 = staticcall IStableSwapPool(_pool).price_oracle()
-    return self._portfolio_value_secant(A_raw, p)
 
 
 @external
 @pure
 def portfolio_value(_A_raw: uint256, _p: uint256) -> uint256:
-    return self._portfolio_value_secant(_A_raw, _p)
+    return self._portfolio_value_newton(_A_raw, _p)
 
 
-@external
+@internal
 @pure
-def xy(_A_raw: uint256, _p: uint256) -> (uint256, uint256):
-    self._assert_inputs(_A_raw, _p)
+def _get_x_y(_A_raw: uint256, _p: uint256) -> (uint256, uint256):
     if _p < WAD:
         p_inv: uint256 = self._inv_price(_p)
-        y_inv: uint256 = self._s_from_secant(_A_raw, p_inv)
+        y_inv: uint256 = self._s_from_newton(_A_raw, p_inv)
         x_inv: uint256 = self._x_from_s(_A_raw, y_inv)
         return y_inv, x_inv
 
-    y: uint256 = self._s_from_secant(_A_raw, _p)
+    y: uint256 = self._s_from_newton(_A_raw, _p)
     x: uint256 = self._x_from_s(_A_raw, y)
     return x, y

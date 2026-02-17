@@ -1,9 +1,5 @@
 # pragma version 0.4.3
 
-interface IStableSwapPool:
-    def A() -> uint256: view
-    def price_oracle() -> uint256: view
-
 
 # =============================================================================
 # StableSwap (n=2), D=1, fixed-point WAD=1e18
@@ -187,23 +183,14 @@ def _portfolio_value_bisection(A_raw: uint256, p: uint256) -> uint256:
 
 
 @external
-@view
-def lp_oracle(_pool: address) -> uint256:
-    A_raw: uint256 = staticcall IStableSwapPool(_pool).A()
-    p: uint256 = staticcall IStableSwapPool(_pool).price_oracle()
-    return self._portfolio_value_bisection(A_raw, p)
-
-
-@external
 @pure
 def portfolio_value(_A_raw: uint256, _p: uint256) -> uint256:
     return self._portfolio_value_bisection(_A_raw, _p)
 
 
-@external
+@internal
 @pure
-def xy(_A_raw: uint256, _p: uint256) -> (uint256, uint256):
-    self._assert_inputs(_A_raw, _p)
+def _get_x_y(_A_raw: uint256, _p: uint256) -> (uint256, uint256):
     if _p < WAD:
         p_inv: uint256 = self._inv_price(_p)
         y_inv: uint256 = self._s_from_bisection(_A_raw, p_inv)

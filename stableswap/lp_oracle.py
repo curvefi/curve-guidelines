@@ -414,7 +414,7 @@ def _(
         A_raw_local = A_eff * A_PRECISION
 
         boa.env.reset_gas_used()
-        x_int, y_int = oracle.xy(A_raw_local, p_int)
+        x_int, y_int = oracle.internal._get_x_y(A_raw_local, p_int)
         gas_xy = boa.env.get_gas_used()
 
         # boa.env.reset_gas_used()
@@ -461,9 +461,9 @@ def _(
         return boa.env.get_gas_used()
 
     oracles = {
-        "bisection": boa.load("stableswap/contracts/LPOracleBisection.vy"),
-        "secant": boa.load("stableswap/contracts/LPOracleSecant.vy"),
-        "newton": boa.load("stableswap/contracts/LPOracleNewton.vy"),
+        "bisection": boa.load("stableswap/contracts/lp_oracle_bisection.vy"),
+        "secant": boa.load("stableswap/contracts/lp_oracle_secant.vy"),
+        "newton": boa.load("stableswap/contracts/lp_oracle_newton.vy"),
     }
     pool_ref = boa.load("stableswap/contracts/StableSwapMock.vy")
     boa.env.enable_gas_profiling()
@@ -560,7 +560,7 @@ def _(
 ):
     summary_md = mo.md(
         f"""**How to compare convergence**  
-    `oracle.xy(A, p)` returns `(x, y)` for each implementation.  
+    `oracle.internal.xy(A, p)` returns `(x, y)` for each implementation.  
     Errors are measured by direct substitution into StableSwap formulas:  
     - invariant equality: `|(4A(x+y-1)+1)*4*x*y - 1|`  
     - price convergence (`-dx/dy`): `|p_hat(x,y) - p|`  
