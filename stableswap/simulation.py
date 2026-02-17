@@ -11,7 +11,7 @@ class StableSwap:
         n: number of currencies
         p: target prices
         """
-        self.A = A  # actually A * n ** (n - 1) because it's an invariant
+        self.A = A * n ** (n - 1)
         self.n = n
         self.fee = fee
         self.admin_fee = admin_fee
