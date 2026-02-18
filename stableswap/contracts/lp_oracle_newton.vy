@@ -55,9 +55,10 @@ A_PRECISION: constant(uint256) = 100
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
-BISECT_STEPS: constant(uint256) = 9
-NEWTON_STEPS: constant(uint256) = 256
-PRICE_TOL: constant(uint256) = 10**4
+BISECT_STEPS: constant(uint256) = 8
+NEWTON_STEPS: constant(uint256) = 64
+# Absolute price tolerance in WAD-space; keeps relative error well below 1e-10.
+PRICE_TOL: constant(uint256) = 10**7
 
 
 @internal
@@ -78,7 +79,6 @@ def _inv_price(p: uint256) -> uint256:
 @internal
 @pure
 def _assert_inputs(A_raw: uint256, p: uint256):
-    assert A_PRECISION <= MAX_A_PRECISION
     assert A_raw > 0
     assert A_raw <= MAX_A_RAW
     assert p != 0
@@ -100,7 +100,8 @@ def _x_from_s(A_raw: uint256, sP: uint256) -> uint256:
     else:
         b1P -= convert(b1_term_abs, int256)
 
-    b1sq: uint256 = convert(abs(b1P), uint256) * convert(abs(b1P), uint256)
+    abs_b1: uint256 = convert(abs(b1P), uint256)
+    b1sq: uint256 = abs_b1 * abs_b1
     term: uint256 = unsafe_div(4 * A_raw * WAD3, A_PRECISION * sP)
     radP2: uint256 = b1sq + term
     sqrtP: uint256 = isqrt(radP2)
@@ -223,7 +224,9 @@ def _portfolio_value_newton(A_raw: uint256, p: uint256) -> uint256:
     # For p < 1 solve reciprocal branch and map back by symmetry.
     if p < WAD:
         p_inv: uint256 = self._inv_price(p)
-        return (p * self._value_from_s(A_raw, p_inv, self._s_from_newton(A_raw, p_inv))) // WAD
+        y_inv: uint256 = self._s_from_newton(A_raw, p_inv)
+        x_inv: uint256 = self._x_from_s(A_raw, y_inv)
+        return y_inv + (p * x_inv) // WAD
 
     sP: uint256 = self._s_from_newton(A_raw, p)
     return self._value_from_s(A_raw, p, sP)

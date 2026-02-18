@@ -464,6 +464,7 @@ def _(
         "bisection": boa.load("stableswap/contracts/lp_oracle_bisection.vy"),
         "secant": boa.load("stableswap/contracts/lp_oracle_secant.vy"),
         "newton": boa.load("stableswap/contracts/lp_oracle_newton.vy"),
+        "brent": boa.load("stableswap/contracts/lp_oracle_brent.vy"),
     }
     pool_ref = boa.load("stableswap/contracts/StableSwapMock.vy")
     boa.env.enable_gas_profiling()

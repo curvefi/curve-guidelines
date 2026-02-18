@@ -14,6 +14,7 @@ A_PRECISION = 10**2
         "stableswap/contracts/lp_oracle_bisection.vy",
         "stableswap/contracts/lp_oracle_secant.vy",
         "stableswap/contracts/lp_oracle_newton.vy",
+        "stableswap/contracts/lp_oracle_brent.vy",
     ],
 )
 def oracle(request):

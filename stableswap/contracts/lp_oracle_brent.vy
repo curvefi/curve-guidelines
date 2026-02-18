@@ -56,7 +56,7 @@ MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
 BISECT_STEPS: constant(uint256) = 8
-SECANT_STEPS: constant(uint256) = 64
+BRENT_STEPS: constant(uint256) = 64
 # Absolute price tolerance in WAD-space; keeps relative error well below 1e-10.
 PRICE_TOL: constant(uint256) = 10**7
 
@@ -140,10 +140,9 @@ def _value_from_s(A_raw: uint256, p: uint256, sP: uint256) -> uint256:
 
 @internal
 @pure
-def _s_from_secant(A_raw: uint256, p: uint256) -> uint256:
-    # Solve g(s)=0 where:
-    #   g(s) = p(s) - p_target
-    #   p_target = p
+def _s_from_brent(A_raw: uint256, p: uint256) -> uint256:
+    # Brent-style root finder for g(s) = p(s) - p_target on [lo, hi].
+    # We combine a secant candidate with bisection safeguards.
     lo: uint256 = 1
     hi: uint256 = WAD - 1
 
@@ -168,48 +167,46 @@ def _s_from_secant(A_raw: uint256, p: uint256) -> uint256:
             break
 
     p_i: int256 = convert(p, int256)
-    s0: uint256 = lo
-    g0: int256 = convert(plo, int256) - p_i
-    s1: uint256 = hi
-    g1: int256 = convert(phi, int256) - p_i
-    # g0 = g(s0), g1 = g(s1)
+    g_lo: int256 = convert(plo, int256) - p_i
+    g_hi: int256 = convert(phi, int256) - p_i
 
-    if convert(abs(g0), uint256) <= PRICE_TOL:
-        return s0
-    if convert(abs(g1), uint256) <= PRICE_TOL:
-        return s1
+    if convert(abs(g_lo), uint256) <= PRICE_TOL:
+        return lo
+    if convert(abs(g_hi), uint256) <= PRICE_TOL:
+        return hi
 
-    # Secant step on g(s):
-    #   s2 = s1 - g1 * (s1 - s0) / (g1 - g0)
-    # Then safeguard s2 to stay inside (lo, hi).
-    for _: uint256 in range(SECANT_STEPS):
-        s2: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
-        dg: int256 = g1 - g0
+    for _: uint256 in range(BRENT_STEPS):
+        span: uint256 = unsafe_sub(hi, lo)
+        if span <= 1:
+            break
+        # Fallback candidate is midpoint.
+        s: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
 
+        # Secant candidate from bracket endpoints.
+        dg: int256 = g_hi - g_lo
         if dg != 0:
-            num: int256 = g1 * (convert(s1, int256) - convert(s0, int256))
-            step: int256 = unsafe_div(num, dg)
-            s2_i: int256 = convert(s1, int256) - step
+            num: int256 = g_hi * (convert(hi, int256) - convert(lo, int256))
+            s_i: int256 = convert(hi, int256) - unsafe_div(num, dg)
+            if s_i > convert(lo, int256) and s_i < convert(hi, int256):
+                sec: uint256 = convert(s_i, uint256)
+                # Accept secant only when it improves over midpoint.
+                step_abs: uint256 = convert(abs(convert(hi, int256) - s_i), uint256)
+                if step_abs * 2 < span:
+                    s = sec
 
-            if s2_i > convert(lo, int256) and s2_i < convert(hi, int256):
-                s2 = convert(s2_i, uint256)
+        ps: uint256 = self._p_from_s(A_raw, s)
+        gs: int256 = convert(ps, int256) - p_i
 
-        p2: uint256 = self._p_from_s(A_raw, s2)
-        g2: int256 = convert(p2, int256) - p_i
-
-        if p2 > p:
-            lo = s2
-            plo = p2
+        if ps > p:
+            lo = s
+            plo = ps
+            g_lo = gs
         else:
-            hi = s2
-            phi = p2
+            hi = s
+            phi = ps
+            g_hi = gs
 
-        s0 = s1
-        g0 = g1
-        s1 = s2
-        g1 = g2
-
-        if unsafe_sub(hi, lo) <= 1 or convert(abs(g2), uint256) <= PRICE_TOL:
+        if convert(abs(gs), uint256) <= PRICE_TOL:
             break
 
     if self._abs_diff(phi, p) < self._abs_diff(plo, p):
@@ -219,23 +216,23 @@ def _s_from_secant(A_raw: uint256, p: uint256) -> uint256:
 
 @internal
 @pure
-def _portfolio_value_secant(A_raw: uint256, p: uint256) -> uint256:
+def _portfolio_value_brent(A_raw: uint256, p: uint256) -> uint256:
     self._assert_inputs(A_raw, p)
     # For p < 1 solve reciprocal branch and map back by symmetry.
     if p < WAD:
         p_inv: uint256 = self._inv_price(p)
-        y_inv: uint256 = self._s_from_secant(A_raw, p_inv)
+        y_inv: uint256 = self._s_from_brent(A_raw, p_inv)
         x_inv: uint256 = self._x_from_s(A_raw, y_inv)
         return y_inv + (p * x_inv) // WAD
 
-    sP: uint256 = self._s_from_secant(A_raw, p)
+    sP: uint256 = self._s_from_brent(A_raw, p)
     return self._value_from_s(A_raw, p, sP)
 
 
 @external
 @pure
 def portfolio_value(_A_raw: uint256, _p: uint256) -> uint256:
-    return self._portfolio_value_secant(_A_raw, _p)
+    return self._portfolio_value_brent(_A_raw, _p)
 
 
 @internal
@@ -243,10 +240,10 @@ def portfolio_value(_A_raw: uint256, _p: uint256) -> uint256:
 def _get_x_y(_A_raw: uint256, _p: uint256) -> (uint256, uint256):
     if _p < WAD:
         p_inv: uint256 = self._inv_price(_p)
-        y_inv: uint256 = self._s_from_secant(_A_raw, p_inv)
+        y_inv: uint256 = self._s_from_brent(_A_raw, p_inv)
         x_inv: uint256 = self._x_from_s(_A_raw, y_inv)
         return y_inv, x_inv
 
-    y: uint256 = self._s_from_secant(_A_raw, _p)
+    y: uint256 = self._s_from_brent(_A_raw, _p)
     x: uint256 = self._x_from_s(_A_raw, y)
     return x, y
