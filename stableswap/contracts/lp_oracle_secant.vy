@@ -50,10 +50,12 @@
 WAD: constant(uint256) = 10**18
 WAD2: constant(uint256) = WAD * WAD
 WAD3: constant(uint256) = WAD2 * WAD
+
 A_PRECISION: constant(uint256) = 10**4
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
+
 BISECT_STEPS: constant(uint256) = 7
 SECANT_STEPS: constant(uint256) = 64
 # Absolute price tolerance in WAD-space; 10**7 keeps relative error well below 1e-9.
@@ -95,7 +97,6 @@ def _p_from_y(A_raw: uint256, y: uint256) -> uint256:
     # p(y) = -dx/dy from implicit differentiation:
     #   p(y) = (4A + 1/(4*x*y^2)) / (4A + 1/(4*x^2*y))
     #        = (4A*x + 1/(4*y^2)) / (4A*x + 1/(4*x*y))
-    # with x = x(y).
     x: uint256 = self._x_from_y(A_raw, y)
     if x == 0:
         return max_value(uint256)

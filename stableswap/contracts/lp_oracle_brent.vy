@@ -56,10 +56,12 @@
 WAD: constant(uint256) = 10**18
 WAD2: constant(uint256) = WAD * WAD
 WAD3: constant(uint256) = WAD2 * WAD
+
 A_PRECISION: constant(uint256) = 10**4
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
+
 BISECT_STEPS: constant(uint256) = 7
 BRENT_STEPS: constant(uint256) = 64
 PRICE_TOL: constant(uint256) = 10**7

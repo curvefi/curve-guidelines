@@ -58,13 +58,18 @@
 WAD: constant(uint256) = 10**18
 WAD2: constant(uint256) = WAD * WAD
 WAD3: constant(uint256) = WAD2 * WAD
+
 A_PRECISION: constant(uint256) = 10**4
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
+
 BISECT_STEPS: constant(uint256) = 7
 NEWTON_STEPS: constant(uint256) = 64
 PRICE_TOL: constant(uint256) = 10**7
+# On domain p_target >= 1e16 (0.01 * WAD):
+#   eps_p_rel <= PRICE_TOL / 1e16
+# For PRICE_TOL = 1e7 => worst-case bound 1e-9 (empirical is much tighter).
 
 
 @internal
@@ -79,7 +84,7 @@ def _x_from_y(A_raw: uint256, y: uint256) -> uint256:
     abs_b1: uint256 = convert(abs(b1), uint256)
     term: uint256 = unsafe_div(4 * A_raw * WAD3, A_PRECISION * y)
     rad: int256 = convert(isqrt(abs_b1**2 + term), int256)
-    if rad <= b1:
+    if rad <= b1:  # extra safety
         return 0
 
     return (convert(rad - b1, uint256) * A_PRECISION) // (8 * A_raw)
@@ -107,13 +112,15 @@ def _p_from_y(A_raw: uint256, y: uint256) -> uint256:
 def _y_from_newton(A_raw: uint256, p: uint256) -> uint256:
     # Solve g(y)=0 where g(y)=p(y)-p_target.
     assert p >= WAD
-    lo: uint256 = WAD // 10**5
-    hi: uint256 = WAD // 2 + 1
+    lo: uint256 = WAD // 10**5  # y for p ~ 5000 and A=100_000
+    hi: uint256 = WAD // 2 + 1  # y for p = 1
 
     plo: uint256 = self._p_from_y(A_raw, lo)
     phi: uint256 = self._p_from_y(A_raw, hi)
 
     # Warmup bisection to tighten bracket before quasi-Newton updates.
+    #   p(y) > p_target => g(y)>0 => move lo up
+    #   p(y) < p_target => g(y)<0 => move hi down
     for _: uint256 in range(BISECT_STEPS):
         mid: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
         pm: uint256 = self._p_from_y(A_raw, mid)
@@ -133,6 +140,9 @@ def _y_from_newton(A_raw: uint256, p: uint256) -> uint256:
     y_prev: int256 = convert(lo, int256)
     g_prev: int256 = convert(plo, int256) - p_i
 
+    # Quasi-Newton step on g(y):
+    #   y_new = y - g(y) * (y - y_prev) / (g(y) - g_prev)
+    # Then safeguard y2 to stay inside (lo, hi) using mid point as fallback.
     for _: uint256 in range(NEWTON_STEPS):
         if convert(abs(gy), uint256) <= PRICE_TOL or unsafe_sub(hi, lo) <= 1:
             break
@@ -140,14 +150,13 @@ def _y_from_newton(A_raw: uint256, p: uint256) -> uint256:
         y_new: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
 
         dg: int256 = gy - g_prev
-        ds: int256 = y - y_prev
         if dg != 0:
-            y_new_i: int256 = y - unsafe_div(gy * ds, dg)
+            y_new_i: int256 = y - unsafe_div(gy * (y - y_prev), dg)
             if convert(lo, int256) < y_new_i and y_new_i < convert(hi, int256):
+                # boundaries are positive, hence safe to convert
                 y_new = convert(y_new_i, uint256)
 
         p_new: uint256 = self._p_from_y(A_raw, y_new)
-        g_new: int256 = convert(p_new, int256) - p_i
 
         if p_new > p:
             lo = y_new
@@ -159,9 +168,10 @@ def _y_from_newton(A_raw: uint256, p: uint256) -> uint256:
         y_prev = y
         g_prev = gy
         y = convert(y_new, int256)
-        gy = g_new
+        gy = convert(p_new, int256) - p_i
 
-    if unsafe_add(plo, phi) >= 2 * p:
+    # Final endpoint selection picks the closer bracket edge
+    if unsafe_add(plo, phi) >= 2 * p:  # using plo >= phi
         return hi
     return lo
 
@@ -173,6 +183,7 @@ def _get_x_y(A_raw: uint256, p: uint256) -> (uint256, uint256):
     assert A_raw <= MAX_A_RAW
     assert p != 0
 
+    # For p < 1 solve reciprocal branch and map back by symmetry.
     if p < WAD:
         p_inv: uint256 = unsafe_div(WAD2 + p // 2, p)
         y_inv: uint256 = self._y_from_newton(A_raw, p_inv)
