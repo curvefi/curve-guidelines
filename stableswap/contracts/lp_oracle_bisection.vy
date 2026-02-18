@@ -1,5 +1,5 @@
 # pragma version 0.4.3
-
+# pragma optimize gas
 
 # =============================================================================
 # StableSwap (n=2), D=1, fixed-point WAD=1e18
@@ -12,152 +12,107 @@
 #
 # Notation:
 #   A_eff := A_raw / A_PRECISION
-#   s := y (because D=1 normalization), with sP = floor(s * WAD)
-#   xP := floor(x * WAD)
-#   g(s) := p(s) - p_target
+#   y := y/D, with D=1 normalization
+#   g(y) := p(y) - p_target
 #
-# 1) Invariant and x(s)
+# 1) Invariant and x(y)
 #   For n=2, D=1:
 #     4*A_eff*(x + y) + 1 = 4*A_eff + 1/(4*x*y)
 #   Rearranged:
 #     4*A_eff*x^2 + (4*A_eff*(y-1) + 1)*x - 1/(4*y) = 0
-#   With y=s and b1 = 4*A_eff*(s-1)+1:
-#     x(s) = (-b1 + sqrt(b1^2 + 4*A_eff/s)) / (8*A_eff)
+#   With b1 = 4*A_eff*(y-1)+1:
+#     x(y) = (-b1 + sqrt(b1^2 + 4*A_eff/y)) / (8*A_eff)
 #
-# 2) Marginal price p(s)
+# 2) Marginal price p(y)
 #   From implicit differentiation of F(x,y)=0:
-#     p(s) = -dx/dy
-#          = (4*A_eff + 1/(4*x*s^2)) / (4*A_eff + 1/(4*x^2*s))
+#     p(y) = -dx/dy
+#          = (4*A_eff + 1/(4*x*y^2)) / (4*A_eff + 1/(4*x^2*y))
 #
-# 3) Value at fixed s
-#     V(s) = x(s) + p_target * s
+# 3) Value at fixed y
+#     V(y) = x(y) + p_target * y
 #
 # 4) Root equation solved by numeric method
-#     g(s) = p(s) - p_target = 0
-#   On the relevant branch p(s) is monotone decreasing in s, so bracketing works.
+#     g(y) = p(y) - p_target = 0
+#   On the relevant branch p(y) is monotone decreasing in y, so bracketing works.
 #
-# 5) Fixed-point mapping used by this implementation
-#   b1P   = WAD + (4*A_raw*(sP - WAD))/A_PRECISION
-#   radP2 = b1P^2 + (4*A_raw*WAD^3)/(A_PRECISION*sP)
-#   xP    = ((-b1P + sqrt(radP2)) * A_PRECISION) / (8*A_raw)
-#   term4 = (4*A_raw*WAD)/A_PRECISION
-#   pP    = ((term4 + WAD^4/(4*xP*sP^2)) * WAD) / (term4 + WAD^4/(4*xP^2*sP))
+# 5) Mapping used by this implementation
+#   b1   = WAD + (4*A_raw*(y - WAD))/A_PRECISION
+#   rad2 = b1^2 + (4*A_raw*WAD^3)/(A_PRECISION*y)
+#   x    = ((-b1 + sqrt(rad2)) * A_PRECISION) / (8*A_raw)
+#   p    = ((4*A_raw*x/A_PRECISION + WAD^3/(4*y^2)) * WAD) /
+#          (4*A_raw*x/A_PRECISION + WAD^3/(4*x*y))
 #
 # 6) Symmetry for p_target < 1
 #   Solve reciprocal branch at p_inv ~= WAD^2 / p_target, then map back:
 #     V(p_target) = p_target * V(p_inv)
-#     (x, y) at p_target is swap of (x, y) at p_inv.
+#     (x, y) at p_target is (y, x) at p_inv.
+#
+# 7) Method used here: pure bisection on g(y)
+#   Find y in bracket [lo, hi] such that:
+#     p(lo) > p_target >= p(hi)
+#   Update:
+#     if p(mid) > p_target: lo = mid
+#     else:                 hi = mid
+#   Stop when hi-lo <= 1 (or iteration cap), then pick endpoint closer in price.
 # =============================================================================
 WAD: constant(uint256) = 10**18
-WAD3: constant(uint256) = WAD * WAD * WAD
-WAD4: constant(uint256) = WAD * WAD * WAD * WAD
+WAD2: constant(uint256) = WAD * WAD
+WAD3: constant(uint256) = WAD2 * WAD
 A_PRECISION: constant(uint256) = 10**4
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
 BISECTION_ITERS: constant(uint256) = 64
-# Error notation used below:
-#   eps_p_abs := |p(s_hat) - p_target|          (WAD-scaled absolute price error)
-#   eps_p_rel := eps_p_abs / p_target           (relative price error)
-#   eps_V_Q   := |V_Q(s_hat) - V_Q(s_star)|     (WAD-scaled value error)
-# For pure bisection (no PRICE_TOL), we rely on bracket width and monotonicity.
 
 
 @internal
 @pure
-def _abs_diff(a: uint256, b: uint256) -> uint256:
-    if a >= b:
-        return unsafe_sub(a, b)
-    return unsafe_sub(b, a)
+def _x_from_y(A_raw: uint256, y: uint256) -> uint256:
+    # Invariant quadratic in x:
+    #   4A*x^2 + (4A*(y-1)+1)*x - 1/(4y) = 0
+    # Positive root:
+    #   x(y) = (-b1 + sqrt(b1^2 + 4A/y)) / (8A), b1 = 1 - 4A*(1-y)
+    b1: int256 = convert(WAD, int256) - convert(4 * A_raw * (WAD - y) // A_PRECISION, int256)
 
-
-@internal
-@pure
-def _inv_price(p: uint256) -> uint256:
-    assert p != 0
-    return unsafe_div(WAD * WAD + p // 2, p)
-
-
-@internal
-@pure
-def _assert_inputs(A_raw: uint256, p: uint256):
-    assert A_raw > 0
-    assert A_raw <= MAX_A_RAW
-    assert p != 0
-
-
-@internal
-@pure
-def _x_from_s(A_raw: uint256, sP: uint256) -> uint256:
-    # x(s) from invariant quadratic:
-    #   4A*x^2 + (4A*(s-1)+1)*x - 1/(4s) = 0
-    #   x(s) = (-b1 + sqrt(b1^2 + 4A/s)) / (8A), b1 = 4A*(s-1)+1
-    # Here sP is WAD-scaled s, and all arithmetic stays in fixed-point.
-    delta: int256 = convert(sP, int256) - convert(WAD, int256)
-
-    b1_term_abs: uint256 = (4 * A_raw * convert(abs(delta), uint256)) // A_PRECISION
-    b1P: int256 = convert(WAD, int256)
-    if delta >= 0:
-        b1P += convert(b1_term_abs, int256)
-    else:
-        b1P -= convert(b1_term_abs, int256)
-
-    abs_b1: uint256 = convert(abs(b1P), uint256)
-    b1sq: uint256 = abs_b1 * abs_b1
-    term: uint256 = unsafe_div(4 * A_raw * WAD3, A_PRECISION * sP)
-    radP2: uint256 = b1sq + term
-    sqrtP: uint256 = isqrt(radP2)
-
-    num: int256 = -b1P + convert(sqrtP, int256)
-    if num <= 0:
+    abs_b1: uint256 = convert(abs(b1), uint256)
+    term: uint256 = unsafe_div(4 * A_raw * WAD3, A_PRECISION * y)
+    rad: int256 = convert(isqrt(abs_b1**2 + term), int256)
+    if rad <= b1:
         return 0
 
-    return convert((num * convert(A_PRECISION, int256)) // convert(8 * A_raw, int256), uint256)
+    return (convert(rad - b1, uint256) * A_PRECISION) // (8 * A_raw)
 
 
 @internal
 @pure
-def _p_from_s(A_raw: uint256, sP: uint256) -> uint256:
-    # p(s) = -dx/dy from implicit differentiation:
-    #   p(s) = (4A + 1/(4*x*s^2)) / (4A + 1/(4*x^2*s))
-    # with x = x(s).
-    xP: uint256 = self._x_from_s(A_raw, sP)
-    if xP == 0:
+def _p_from_y(A_raw: uint256, y: uint256) -> uint256:
+    # p(y) = -dx/dy:
+    #   p(y) = (4A + 1/(4*x*y^2)) / (4A + 1/(4*x^2*y))
+    # Multiply numerator and denominator by x to reduce one division by x:
+    #   p(y) = (4A*x + 1/(4*y^2)) / (4A*x + 1/(4*x*y))
+    x: uint256 = self._x_from_y(A_raw, y)
+    if x == 0:
         return max_value(uint256)
 
-    term4AP: uint256 = (4 * A_raw * WAD) // A_PRECISION
+    term4A: uint256 = (4 * A_raw * x) // A_PRECISION
     return unsafe_div(
-        (term4AP + unsafe_div(WAD4, 4 * xP * sP * sP)) * WAD,
-        term4AP + unsafe_div(WAD4, 4 * xP * xP * sP),
+        (term4A + unsafe_div(WAD3, 4 * y * y)) * WAD,
+        term4A + unsafe_div(WAD3, 4 * x * y),
     )
 
 
 @internal
 @pure
-def _value_from_s(A_raw: uint256, p: uint256, sP: uint256) -> uint256:
-    # Portfolio value at y=s:
-    #   V(s) = x(s) + p_target * s
-    return self._x_from_s(A_raw, sP) + (p * sP) // WAD
-
-
-@internal
-@pure
-def _s_from_bisection(A_raw: uint256, p: uint256) -> uint256:
-    # Root finding for:
-    #   g(s) = p(s) - p_target
-    # Target equation:
-    #   g(s*) = 0  <=>  p(s*) = p_target
-    # Monotonicity on bracket [lo, hi]:
-    #   g(mid) > 0 (pm > p) => s too small => move lo = mid
-    #   g(mid) < 0 (pm < p) => s too large => move hi = mid
-    lo: uint256 = 1
-    hi: uint256 = WAD - 1
+def _y_from_bisection(A_raw: uint256, p: uint256) -> uint256:
+    # Solve g(y) = p(y) - p_target = 0 on monotone branch y in (0, 1/2].
+    assert p >= WAD
+    lo: uint256 = WAD // 10**5
+    hi: uint256 = WAD // 2 + 1
 
     for _: uint256 in range(BISECTION_ITERS):
         mid: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
-        pm: uint256 = self._p_from_s(A_raw, mid)
+        pm: uint256 = self._p_from_y(A_raw, mid)
 
-        # p(s) decreases with s
         if pm > p:
             lo = mid
         else:
@@ -166,52 +121,41 @@ def _s_from_bisection(A_raw: uint256, p: uint256) -> uint256:
         if unsafe_sub(hi, lo) <= 1:
             break
 
-    # Bracket invariant:
-    #   p(lo) > p_target >= p(hi)
-    # Returning hi avoids two extra p(s) evaluations.
-    #
-    # Theoretical price error for returned endpoint:
-    #   eps_p_abs = p_target - p(hi) <= p(lo) - p(hi)
-    # and relative:
-    #   eps_p_rel <= (p(lo) - p(hi)) / p_target
-    #
-    # Since loop exits on hi - lo <= 1 (in sP units), the root s* lies in
-    # [lo, hi] with |s_hat - s*| <= 1 (scaled). Then for value:
-    #   eps_V_Q <= eps_p_abs * |s_hat - s*| / WAD <= eps_p_abs / WAD
-    # (using V'(s) = p_target - p(s) and mean-value bound).
-    return hi
+    plo: uint256 = self._p_from_y(A_raw, lo)
+    phi: uint256 = self._p_from_y(A_raw, hi)
+    if unsafe_add(plo, phi) >= 2 * p:
+        return hi
+    return lo
+
+
+@internal
+@pure
+def _get_x_y(A_raw: uint256, p: uint256) -> (uint256, uint256):
+    assert A_raw > 0
+    assert A_raw <= MAX_A_RAW
+    assert p != 0
+
+    if p < WAD:
+        p_inv: uint256 = unsafe_div(WAD2 + p // 2, p)
+        y_inv: uint256 = self._y_from_bisection(A_raw, p_inv)
+        x_inv: uint256 = self._x_from_y(A_raw, y_inv)
+        return y_inv, x_inv
+
+    y: uint256 = self._y_from_bisection(A_raw, p)
+    x: uint256 = self._x_from_y(A_raw, y)
+    return x, y
 
 
 @internal
 @pure
 def _portfolio_value_bisection(A_raw: uint256, p: uint256) -> uint256:
-    self._assert_inputs(A_raw, p)
-    # For p < 1 solve reciprocal branch and map back by symmetry.
-    if p < WAD:
-        p_inv: uint256 = self._inv_price(p)
-        y_inv: uint256 = self._s_from_bisection(A_raw, p_inv)
-        x_inv: uint256 = self._x_from_s(A_raw, y_inv)
-        return y_inv + (p * x_inv) // WAD
-
-    sP: uint256 = self._s_from_bisection(A_raw, p)
-    return self._value_from_s(A_raw, p, sP)
+    x: uint256 = 0
+    y: uint256 = 0
+    x, y = self._get_x_y(A_raw, p)
+    return x + p * y // WAD
 
 
 @external
 @pure
 def portfolio_value(_A_raw: uint256, _p: uint256) -> uint256:
     return self._portfolio_value_bisection(_A_raw, _p)
-
-
-@internal
-@pure
-def _get_x_y(_A_raw: uint256, _p: uint256) -> (uint256, uint256):
-    if _p < WAD:
-        p_inv: uint256 = self._inv_price(_p)
-        y_inv: uint256 = self._s_from_bisection(_A_raw, p_inv)
-        x_inv: uint256 = self._x_from_s(_A_raw, y_inv)
-        return y_inv, x_inv
-
-    y: uint256 = self._s_from_bisection(_A_raw, _p)
-    x: uint256 = self._x_from_s(_A_raw, y)
-    return x, y

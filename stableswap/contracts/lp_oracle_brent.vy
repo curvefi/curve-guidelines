@@ -1,5 +1,5 @@
 # pragma version 0.4.3
-
+# pragma optimize gas
 
 # =============================================================================
 # StableSwap (n=2), D=1, fixed-point WAD=1e18
@@ -12,160 +12,109 @@
 #
 # Notation:
 #   A_eff := A_raw / A_PRECISION
-#   s := y (because D=1 normalization), with sP = floor(s * WAD)
-#   xP := floor(x * WAD)
-#   g(s) := p(s) - p_target
+#   y := y/D, with D=1 normalization
+#   g(y) := p(y) - p_target
 #
-# 1) Invariant and x(s)
+# 1) Invariant and x(y)
 #   For n=2, D=1:
 #     4*A_eff*(x + y) + 1 = 4*A_eff + 1/(4*x*y)
 #   Rearranged:
 #     4*A_eff*x^2 + (4*A_eff*(y-1) + 1)*x - 1/(4*y) = 0
-#   With y=s and b1 = 4*A_eff*(s-1)+1:
-#     x(s) = (-b1 + sqrt(b1^2 + 4*A_eff/s)) / (8*A_eff)
+#   With b1 = 4*A_eff*(y-1)+1:
+#     x(y) = (-b1 + sqrt(b1^2 + 4*A_eff/y)) / (8*A_eff)
 #
-# 2) Marginal price p(s)
+# 2) Marginal price p(y)
 #   From implicit differentiation of F(x,y)=0:
-#     p(s) = -dx/dy
-#          = (4*A_eff + 1/(4*x*s^2)) / (4*A_eff + 1/(4*x^2*s))
+#     p(y) = -dx/dy
+#          = (4*A_eff + 1/(4*x*y^2)) / (4*A_eff + 1/(4*x^2*y))
 #
-# 3) Value at fixed s
-#     V(s) = x(s) + p_target * s
+# 3) Value at fixed y
+#     V(y) = x(y) + p_target * y
 #
 # 4) Root equation solved by numeric method
-#     g(s) = p(s) - p_target = 0
-#   On the relevant branch p(s) is monotone decreasing in s, so bracketing works.
+#     g(y) = p(y) - p_target = 0
+#   On the relevant branch p(y) is monotone decreasing in y, so bracketing works.
 #
-# 5) Fixed-point mapping used by this implementation
-#   b1P   = WAD + (4*A_raw*(sP - WAD))/A_PRECISION
-#   radP2 = b1P^2 + (4*A_raw*WAD^3)/(A_PRECISION*sP)
-#   xP    = ((-b1P + sqrt(radP2)) * A_PRECISION) / (8*A_raw)
-#   term4 = (4*A_raw*WAD)/A_PRECISION
-#   pP    = ((term4 + WAD^4/(4*xP*sP^2)) * WAD) / (term4 + WAD^4/(4*xP^2*sP))
+# 5) Mapping used by this implementation
+#   b1   = WAD + (4*A_raw*(y - WAD))/A_PRECISION
+#   rad2 = b1^2 + (4*A_raw*WAD^3)/(A_PRECISION*y)
+#   x    = ((-b1 + sqrt(rad2)) * A_PRECISION) / (8*A_raw)
+#   p    = ((4*A_raw*x/A_PRECISION + WAD^3/(4*y^2)) * WAD) /
+#          (4*A_raw*x/A_PRECISION + WAD^3/(4*x*y))
 #
 # 6) Symmetry for p_target < 1
 #   Solve reciprocal branch at p_inv ~= WAD^2 / p_target, then map back:
 #     V(p_target) = p_target * V(p_inv)
-#     (x, y) at p_target is swap of (x, y) at p_inv.
+#     (x, y) at p_target is (y, x) at p_inv.
+#
+# 7) Method used here: safeguarded Brent-style updates on g(y)
+#   Keep bracket [lo, hi] with g(lo) >= 0 >= g(hi), try secant candidate:
+#     y_sec = hi - g(hi) * (hi - lo) / (g(hi) - g(lo))
+#   Accept secant step only if it stays well inside bracket; otherwise fallback
+#   to midpoint. This combines fast progress of secant with bisection safety.
 # =============================================================================
 WAD: constant(uint256) = 10**18
-WAD3: constant(uint256) = WAD * WAD * WAD
-WAD4: constant(uint256) = WAD * WAD * WAD * WAD
+WAD2: constant(uint256) = WAD * WAD
+WAD3: constant(uint256) = WAD2 * WAD
 A_PRECISION: constant(uint256) = 10**4
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
-BISECT_STEPS: constant(uint256) = 8
+BISECT_STEPS: constant(uint256) = 7
 BRENT_STEPS: constant(uint256) = 64
-# Absolute price tolerance in WAD-space; keeps relative error well below 1e-10.
 PRICE_TOL: constant(uint256) = 10**7
-# Error notation used below:
-#   eps_p_abs := |p(s_hat) - p_target|          (WAD-scaled absolute price error)
-#   eps_p_rel := eps_p_abs / p_target           (relative price error)
-#   eps_V_Q   := |V_Q(s_hat) - V_Q(s_star)|     (WAD-scaled value error)
-#
-# For tolerance stop:
-#   eps_p_abs <= PRICE_TOL
-#   eps_p_rel <= PRICE_TOL / p_target
-# On requested domain p_target >= 1e16 (0.01 * WAD):
-#   eps_p_rel <= PRICE_TOL / 1e16
-# For PRICE_TOL = 1e7 => worst-case bound 1e-9 (empirical is much tighter).
 
 
 @internal
 @pure
-def _abs_diff(a: uint256, b: uint256) -> uint256:
-    if a >= b:
-        return unsafe_sub(a, b)
-    return unsafe_sub(b, a)
+def _x_from_y(A_raw: uint256, y: uint256) -> uint256:
+    # Invariant quadratic in x:
+    #   4A*x^2 + (4A*(y-1)+1)*x - 1/(4y) = 0
+    # Positive root:
+    #   x(y) = (-b1 + sqrt(b1^2 + 4A/y)) / (8A), b1 = 1 - 4A*(1-y)
+    b1: int256 = convert(WAD, int256) - convert(4 * A_raw * (WAD - y) // A_PRECISION, int256)
 
-
-@internal
-@pure
-def _inv_price(p: uint256) -> uint256:
-    assert p != 0
-    return unsafe_div(WAD * WAD + p // 2, p)
-
-
-@internal
-@pure
-def _assert_inputs(A_raw: uint256, p: uint256):
-    assert A_raw > 0
-    assert A_raw <= MAX_A_RAW
-    assert p != 0
-
-
-@internal
-@pure
-def _x_from_s(A_raw: uint256, sP: uint256) -> uint256:
-    # x(s) from invariant quadratic:
-    #   4A*x^2 + (4A*(s-1)+1)*x - 1/(4s) = 0
-    #   x(s) = (-b1 + sqrt(b1^2 + 4A/s)) / (8A), b1 = 4A*(s-1)+1
-    # Here sP is WAD-scaled s, and all arithmetic stays in fixed-point.
-    delta: int256 = convert(sP, int256) - convert(WAD, int256)
-
-    b1_term_abs: uint256 = (4 * A_raw * convert(abs(delta), uint256)) // A_PRECISION
-    b1P: int256 = convert(WAD, int256)
-    if delta >= 0:
-        b1P += convert(b1_term_abs, int256)
-    else:
-        b1P -= convert(b1_term_abs, int256)
-
-    abs_b1: uint256 = convert(abs(b1P), uint256)
-    b1sq: uint256 = abs_b1 * abs_b1
-    term: uint256 = unsafe_div(4 * A_raw * WAD3, A_PRECISION * sP)
-    radP2: uint256 = b1sq + term
-    sqrtP: uint256 = isqrt(radP2)
-
-    num: int256 = -b1P + convert(sqrtP, int256)
-    if num <= 0:
+    abs_b1: uint256 = convert(abs(b1), uint256)
+    term: uint256 = unsafe_div(4 * A_raw * WAD3, A_PRECISION * y)
+    rad: int256 = convert(isqrt(abs_b1**2 + term), int256)
+    if rad <= b1:
         return 0
 
-    return convert((num * convert(A_PRECISION, int256)) // convert(8 * A_raw, int256), uint256)
+    return (convert(rad - b1, uint256) * A_PRECISION) // (8 * A_raw)
 
 
 @internal
 @pure
-def _p_from_s(A_raw: uint256, sP: uint256) -> uint256:
-    # p(s) = -dx/dy from implicit differentiation:
-    #   p(s) = (4A + 1/(4*x*s^2)) / (4A + 1/(4*x^2*s))
-    # with x = x(s).
-    xP: uint256 = self._x_from_s(A_raw, sP)
-    if xP == 0:
+def _p_from_y(A_raw: uint256, y: uint256) -> uint256:
+    # p(y) = -dx/dy:
+    #   p(y) = (4A + 1/(4*x*y^2)) / (4A + 1/(4*x^2*y))
+    #        = (4A*x + 1/(4*y^2)) / (4A*x + 1/(4*x*y))
+    x: uint256 = self._x_from_y(A_raw, y)
+    if x == 0:
         return max_value(uint256)
 
-    term4AP: uint256 = (4 * A_raw * WAD) // A_PRECISION
+    term4A: uint256 = (4 * A_raw * x) // A_PRECISION
     return unsafe_div(
-        (term4AP + unsafe_div(WAD4, 4 * xP * sP * sP)) * WAD,
-        term4AP + unsafe_div(WAD4, 4 * xP * xP * sP),
+        (term4A + unsafe_div(WAD3, 4 * y * y)) * WAD,
+        term4A + unsafe_div(WAD3, 4 * x * y),
     )
 
 
 @internal
 @pure
-def _value_from_s(A_raw: uint256, p: uint256, sP: uint256) -> uint256:
-    # Portfolio value at y=s:
-    #   V(s) = x(s) + p_target * s
-    return self._x_from_s(A_raw, sP) + (p * sP) // WAD
+def _y_from_brent(A_raw: uint256, p: uint256) -> uint256:
+    # Brent-style root finder for g(y)=p(y)-p_target on [lo, hi].
+    assert p >= WAD
+    lo: uint256 = WAD // 10**5
+    hi: uint256 = WAD // 2 + 1
 
+    plo: uint256 = self._p_from_y(A_raw, lo)
+    phi: uint256 = self._p_from_y(A_raw, hi)
 
-@internal
-@pure
-def _s_from_brent(A_raw: uint256, p: uint256) -> uint256:
-    # Brent-style root finder for g(s) = p(s) - p_target on [lo, hi].
-    # We combine a secant candidate with bisection safeguards.
-    lo: uint256 = 1
-    hi: uint256 = WAD - 1
-
-    plo: uint256 = self._p_from_s(A_raw, lo)
-    phi: uint256 = self._p_from_s(A_raw, hi)
-
-    # Warmup bisection by sign of g(mid):
-    #   p(s) > p_target => g(s)>0 => move lo up
-    #   p(s) < p_target => g(s)<0 => move hi down
+    # Warmup bisection by sign of g(mid).
     for _: uint256 in range(BISECT_STEPS):
         mid: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
-        pm: uint256 = self._p_from_s(A_raw, mid)
+        pm: uint256 = self._p_from_y(A_raw, mid)
 
         if pm > p:
             lo = mid
@@ -173,9 +122,6 @@ def _s_from_brent(A_raw: uint256, p: uint256) -> uint256:
         else:
             hi = mid
             phi = pm
-
-        if unsafe_sub(hi, lo) <= 1:
-            break
 
     p_i: int256 = convert(p, int256)
     g_lo: int256 = convert(plo, int256) - p_i
@@ -190,83 +136,68 @@ def _s_from_brent(A_raw: uint256, p: uint256) -> uint256:
         span: uint256 = unsafe_sub(hi, lo)
         if span <= 1:
             break
-        # Fallback candidate is midpoint.
-        s: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
 
-        # Secant candidate from bracket endpoints.
+        y: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
+
+        # Secant candidate from endpoints; keep midpoint fallback.
         dg: int256 = g_hi - g_lo
         if dg != 0:
-            num: int256 = g_hi * (convert(hi, int256) - convert(lo, int256))
-            s_i: int256 = convert(hi, int256) - unsafe_div(num, dg)
-            if s_i > convert(lo, int256) and s_i < convert(hi, int256):
-                sec: uint256 = convert(s_i, uint256)
-                # Accept secant only when it improves over midpoint.
-                step_abs: uint256 = convert(abs(convert(hi, int256) - s_i), uint256)
-                if step_abs * 2 < span:
-                    s = sec
+            y_i: int256 = convert(hi, int256) - unsafe_div(g_hi * (convert(hi, int256) - convert(lo, int256)), dg)
+            if convert(lo, int256) < y_i and y_i < convert(hi, int256):
+                y_sec: uint256 = convert(y_i, uint256)
+                # Reject endpoint-clinging secant steps; otherwise they can
+                # make very small progress when |g_lo| >> |g_hi|.
+                if unsafe_add(lo, span // 8) < y_sec and y_sec < unsafe_sub(hi, span // 8):
+                    y = y_sec
 
-        ps: uint256 = self._p_from_s(A_raw, s)
-        gs: int256 = convert(ps, int256) - p_i
+        py: uint256 = self._p_from_y(A_raw, y)
+        gy: int256 = convert(py, int256) - p_i
 
-        if ps > p:
-            lo = s
-            plo = ps
-            g_lo = gs
+        if py > p:
+            lo = y
+            plo = py
+            g_lo = gy
         else:
-            hi = s
-            phi = ps
-            g_hi = gs
+            hi = y
+            phi = py
+            g_hi = gy
 
-        if convert(abs(gs), uint256) <= PRICE_TOL:
+        if convert(abs(gy), uint256) <= PRICE_TOL:
             break
 
-    # Final endpoint selection picks the closer bracket edge, so if this path
-    # exits by bracket width the endpoint price error is bounded by half-span:
-    #   eps_p_abs <= (p(lo) - p(hi)) / 2
-    # If loop exits by tolerance:
-    #   eps_p_abs <= PRICE_TOL
-    # Combined conservative bound:
-    #   eps_p_abs <= max(PRICE_TOL, (p(lo) - p(hi))/2)
-    #
-    # Value error from price error (mean-value bound, V'(s)=p_target-p(s)):
-    #   eps_V_Q <= eps_p_abs * |s_hat - s*| / WAD
-    # and when hi-lo<=1:
-    #   eps_V_Q <= eps_p_abs / WAD
-    if self._abs_diff(phi, p) < self._abs_diff(plo, p):
+    if unsafe_add(plo, phi) >= 2 * p:
         return hi
     return lo
 
 
 @internal
 @pure
-def _portfolio_value_brent(A_raw: uint256, p: uint256) -> uint256:
-    self._assert_inputs(A_raw, p)
-    # For p < 1 solve reciprocal branch and map back by symmetry.
-    if p < WAD:
-        p_inv: uint256 = self._inv_price(p)
-        y_inv: uint256 = self._s_from_brent(A_raw, p_inv)
-        x_inv: uint256 = self._x_from_s(A_raw, y_inv)
-        return y_inv + (p * x_inv) // WAD
+def _get_x_y(A_raw: uint256, p: uint256) -> (uint256, uint256):
+    assert A_raw > 0
+    assert A_raw <= MAX_A_RAW
+    assert p != 0
 
-    sP: uint256 = self._s_from_brent(A_raw, p)
-    return self._value_from_s(A_raw, p, sP)
+    if p < WAD:
+        p_inv: uint256 = unsafe_div(WAD2 + p // 2, p)
+        y_inv: uint256 = self._y_from_brent(A_raw, p_inv)
+        x_inv: uint256 = self._x_from_y(A_raw, y_inv)
+        return y_inv, x_inv
+
+    y: uint256 = self._y_from_brent(A_raw, p)
+    x: uint256 = self._x_from_y(A_raw, y)
+    return x, y
+
+
+@internal
+@pure
+def _portfolio_value_brent(A_raw: uint256, p: uint256) -> uint256:
+    x: uint256 = 0
+    y: uint256 = 0
+    x, y = self._get_x_y(A_raw, p)
+    return x + p * y // WAD
 
 
 @external
 @pure
 def portfolio_value(_A_raw: uint256, _p: uint256) -> uint256:
     return self._portfolio_value_brent(_A_raw, _p)
-
-
-@internal
-@pure
-def _get_x_y(_A_raw: uint256, _p: uint256) -> (uint256, uint256):
-    if _p < WAD:
-        p_inv: uint256 = self._inv_price(_p)
-        y_inv: uint256 = self._s_from_brent(_A_raw, p_inv)
-        x_inv: uint256 = self._x_from_s(_A_raw, y_inv)
-        return y_inv, x_inv
-
-    y: uint256 = self._s_from_brent(_A_raw, _p)
-    x: uint256 = self._x_from_s(_A_raw, y)
-    return x, y

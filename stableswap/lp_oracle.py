@@ -56,7 +56,7 @@ def _(
     px,
 ):
     # Assuming p = price_oracle
-    MAX_P_FACTOR = 10  # Factor to limit price changes
+    MAX_P_FACTOR = 1.25  # Factor to limit price changes
     dx = D // 10_000
     dy = 0
 
@@ -367,7 +367,7 @@ def _(mo):
 def _(mo):
     comparison_samples = mo.ui.number(start=10, stop=10_000, step=10, value=200, label="samples")
     comparison_seed = mo.ui.number(start=0, stop=1_000_000, step=1, value=42, label="seed")
-    comparison_a_min = mo.ui.number(start=1.0, stop=100_000, step=0.0001, value=9, label="A min")
+    comparison_a_min = mo.ui.number(start=0.01, stop=100_000, step=0.0001, value=1, label="A min")
     comparison_a_max = mo.ui.number(start=1.0, stop=100_000, step=1, value=10_000, label="A max")
     comparison_p_min = mo.ui.number(start=0.01, stop=100.0, step=0.01, value=0.1, label="p min (x WAD)")
     comparison_p_max = mo.ui.number(start=0.1, stop=10.0, step=0.01, value=8.0, label="p max (x WAD)")
@@ -406,7 +406,7 @@ def _(
     import boa
 
     WAD = 10**18
-    A_PRECISION = 100
+    A_PRECISION = 10**4
 
     def stats(oracle, params: dict, method: str):
         A_eff = int(params["A"])
@@ -546,6 +546,7 @@ def _(
         comparison_df,
         gas_storage_ref,
         metrics_display_df,
+        oracles,
         summary_display_df,
     )
 
