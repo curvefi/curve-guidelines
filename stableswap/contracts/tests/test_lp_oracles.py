@@ -5,7 +5,7 @@ from hypothesis import strategies as st
 
 
 WAD = 10**18
-A_PRECISION = 10**2
+A_PRECISION = 10**4
 
 
 @pytest.fixture(

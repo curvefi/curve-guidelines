@@ -51,7 +51,7 @@
 WAD: constant(uint256) = 10**18
 WAD3: constant(uint256) = WAD * WAD * WAD
 WAD4: constant(uint256) = WAD * WAD * WAD * WAD
-A_PRECISION: constant(uint256) = 100
+A_PRECISION: constant(uint256) = 10**4
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
@@ -59,6 +59,17 @@ BISECT_STEPS: constant(uint256) = 8
 BRENT_STEPS: constant(uint256) = 64
 # Absolute price tolerance in WAD-space; keeps relative error well below 1e-10.
 PRICE_TOL: constant(uint256) = 10**7
+# Error notation used below:
+#   eps_p_abs := |p(s_hat) - p_target|          (WAD-scaled absolute price error)
+#   eps_p_rel := eps_p_abs / p_target           (relative price error)
+#   eps_V_Q   := |V_Q(s_hat) - V_Q(s_star)|     (WAD-scaled value error)
+#
+# For tolerance stop:
+#   eps_p_abs <= PRICE_TOL
+#   eps_p_rel <= PRICE_TOL / p_target
+# On requested domain p_target >= 1e16 (0.01 * WAD):
+#   eps_p_rel <= PRICE_TOL / 1e16
+# For PRICE_TOL = 1e7 => worst-case bound 1e-9 (empirical is much tighter).
 
 
 @internal
@@ -209,6 +220,18 @@ def _s_from_brent(A_raw: uint256, p: uint256) -> uint256:
         if convert(abs(gs), uint256) <= PRICE_TOL:
             break
 
+    # Final endpoint selection picks the closer bracket edge, so if this path
+    # exits by bracket width the endpoint price error is bounded by half-span:
+    #   eps_p_abs <= (p(lo) - p(hi)) / 2
+    # If loop exits by tolerance:
+    #   eps_p_abs <= PRICE_TOL
+    # Combined conservative bound:
+    #   eps_p_abs <= max(PRICE_TOL, (p(lo) - p(hi))/2)
+    #
+    # Value error from price error (mean-value bound, V'(s)=p_target-p(s)):
+    #   eps_V_Q <= eps_p_abs * |s_hat - s*| / WAD
+    # and when hi-lo<=1:
+    #   eps_V_Q <= eps_p_abs / WAD
     if self._abs_diff(phi, p) < self._abs_diff(plo, p):
         return hi
     return lo

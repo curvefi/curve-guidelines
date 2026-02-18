@@ -51,11 +51,16 @@
 WAD: constant(uint256) = 10**18
 WAD3: constant(uint256) = WAD * WAD * WAD
 WAD4: constant(uint256) = WAD * WAD * WAD * WAD
-A_PRECISION: constant(uint256) = 100
+A_PRECISION: constant(uint256) = 10**4
 MAX_A: constant(uint256) = 100_000
 MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
 BISECTION_ITERS: constant(uint256) = 64
+# Error notation used below:
+#   eps_p_abs := |p(s_hat) - p_target|          (WAD-scaled absolute price error)
+#   eps_p_rel := eps_p_abs / p_target           (relative price error)
+#   eps_V_Q   := |V_Q(s_hat) - V_Q(s_star)|     (WAD-scaled value error)
+# For pure bisection (no PRICE_TOL), we rely on bracket width and monotonicity.
 
 
 @internal
@@ -163,8 +168,17 @@ def _s_from_bisection(A_raw: uint256, p: uint256) -> uint256:
 
     # Bracket invariant:
     #   p(lo) > p_target >= p(hi)
-    # Returning hi avoids two extra p(s) evaluations and still keeps
-    # price error far below the target threshold.
+    # Returning hi avoids two extra p(s) evaluations.
+    #
+    # Theoretical price error for returned endpoint:
+    #   eps_p_abs = p_target - p(hi) <= p(lo) - p(hi)
+    # and relative:
+    #   eps_p_rel <= (p(lo) - p(hi)) / p_target
+    #
+    # Since loop exits on hi - lo <= 1 (in sP units), the root s* lies in
+    # [lo, hi] with |s_hat - s*| <= 1 (scaled). Then for value:
+    #   eps_V_Q <= eps_p_abs * |s_hat - s*| / WAD <= eps_p_abs / WAD
+    # (using V'(s) = p_target - p(s) and mean-value bound).
     return hi
 
 
