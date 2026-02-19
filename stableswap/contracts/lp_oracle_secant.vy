@@ -58,19 +58,16 @@ MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
 
 BISECT_STEPS: constant(uint256) = 7
 SECANT_STEPS: constant(uint256) = 64
-# Absolute price tolerance in WAD-space; 10**7 keeps relative error well below 1e-9.
-PRICE_TOL: constant(uint256) = 10**7
+# Relative price tolerance in WAD-scale:
+#   |p(y_hat)-p_target| / p_target <= 1 / PRICE_TOL_REL
+PRICE_TOL_REL: constant(uint256) = 10**6
 # Error notation used below:
 #   eps_p_abs := |p(y_hat) - p_target|          (WAD-scaled absolute price error)
 #   eps_p_rel := eps_p_abs / p_target           (relative price error)
 #   eps_V     := |V(y_hat) - V(y_star)|         (WAD-scaled value error)
 #
 # For tolerance stop:
-#   eps_p_abs <= PRICE_TOL
-#   eps_p_rel <= PRICE_TOL / p_target
-# On requested domain p_target >= 1e16 (0.01 * WAD):
-#   eps_p_rel <= PRICE_TOL / 1e16
-# For PRICE_TOL = 1e7 => worst-case bound 1e-9 (empirical is much tighter).
+#   eps_p_rel <= 1 / PRICE_TOL_REL
 
 
 @internal
@@ -80,6 +77,21 @@ def _x_from_y(A_raw: uint256, y: uint256) -> uint256:
     #   4A*x^2 + (4A*(y-1)+1)*x - 1/(4y) = 0
     #   x(y) = (-b1 + sqrt(b1^2 + 4A/y)) / (8A), b1 = 4A*(y-1)+1 = 1-4A*(1-y)
     # y<=1.
+    #
+    # Error bound for fixed-point rounding (absolute, in output wei):
+    #   x*     = ((sqrt(b^2 + t) - b) * A_PRECISION) / (8*A_raw)      (exact real)
+    #   b      = WAD - (4*A_raw*(WAD-y))/A_PRECISION
+    #   t      = (4*A_raw*WAD^3)/(A_PRECISION*y)
+    #   b_hat  = WAD - floor(4*A_raw*(WAD-y)/A_PRECISION), |b_hat-b| < 1
+    #   t_hat  = floor(t),                                    |t_hat-t| < 1
+    #   r_hat  = floor(sqrt(b_hat^2 + t_hat))
+    #   x_hat  = floor(((r_hat - b_hat) * A_PRECISION)/(8*A_raw))
+    # Using |d sqrt(b^2+t)/db| <= 1 and |d sqrt(b^2+t)/dt| = 1/(2*sqrt(b^2+t)) << 1:
+    #   |r_hat - sqrt(b^2+t)| < 2
+    # Therefore:
+    #   |x_hat - x*| < 1 + (3*A_PRECISION)/(8*A_raw)
+    #   => for A_raw >= 1:            |x_hat - x*| < 3751 wei
+    #   => for A_raw >= A_PRECISION:  |x_hat - x*| < 2 wei
     b1: int256 = convert(WAD, int256) - convert(4 * A_raw * (WAD - y) // A_PRECISION, int256)
 
     abs_b1: uint256 = convert(abs(b1), uint256)
@@ -136,15 +148,16 @@ def _y_from_secant(A_raw: uint256, p: uint256) -> uint256:
             phi = pm
 
     p_i: int256 = convert(p, int256)
+    tol_abs: uint256 = unsafe_div(p, PRICE_TOL_REL)
     y0: int256 = convert(lo, int256)
     g0: int256 = convert(plo, int256) - p_i
     y1: int256 = convert(hi, int256)
     g1: int256 = convert(phi, int256) - p_i
     # g0 = g(y0), g1 = g(y1)
 
-    if convert(abs(g0), uint256) <= PRICE_TOL:
+    if convert(abs(g0), uint256) <= tol_abs:
         return lo
-    if convert(abs(g1), uint256) <= PRICE_TOL:
+    if convert(abs(g1), uint256) <= tol_abs:
         return hi
 
     # Secant step on g(y):
@@ -175,16 +188,16 @@ def _y_from_secant(A_raw: uint256, p: uint256) -> uint256:
         y1 = convert(y2, int256)
         g1 = g2
 
-        if unsafe_sub(hi, lo) <= 1 or convert(abs(g2), uint256) <= PRICE_TOL:
+        if convert(abs(g2), uint256) <= tol_abs or unsafe_sub(hi, lo) <= 1:
             break
 
     # Final endpoint selection picks the closer bracket edge, so if this path
     # exits by bracket width the endpoint price error is bounded by half-span:
     #   eps_p_abs <= (p(lo) - p(hi)) / 2
     # If loop exits by tolerance:
-    #   eps_p_abs <= PRICE_TOL
+    #   eps_p_abs <= p_target / PRICE_TOL_REL
     # Combined conservative bound:
-    #   eps_p_abs <= max(PRICE_TOL, (p(lo) - p(hi))/2)
+    #   eps_p_abs <= max(p_target / PRICE_TOL_REL, (p(lo) - p(hi))/2)
     #
     # Value error from price error (mean-value bound, V'(y)=p_target-p(y)):
     #   eps_V <= eps_p_abs * |y_hat - y*| / WAD

@@ -53,7 +53,9 @@
 #   Update:
 #     if p(mid) > p_target: lo = mid
 #     else:                 hi = mid
-#   Stop when hi-lo <= 1 (or iteration cap), then pick endpoint closer in price.
+#   Stop when relative error is small:
+#     |p(mid)-p_target| / p_target <= 1 / PRICE_TOL_REL
+#   or hi-lo <= 1, or iteration cap.
 # =============================================================================
 WAD: constant(uint256) = 10**18
 WAD2: constant(uint256) = WAD * WAD
@@ -65,6 +67,7 @@ MAX_A_PRECISION: constant(uint256) = 10_000
 MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
 
 BISECTION_ITERS: constant(uint256) = 64
+PRICE_TOL_REL: constant(uint256) = 10**6
 
 
 @internal
@@ -74,6 +77,21 @@ def _x_from_y(A_raw: uint256, y: uint256) -> uint256:
     #   4A*x^2 + (4A*(y-1)+1)*x - 1/(4y) = 0
     # Positive root:
     #   x(y) = (-b1 + sqrt(b1^2 + 4A/y)) / (8A), b1 = 1 - 4A*(1-y)
+    #
+    # Error bound for fixed-point rounding (absolute, in output wei):
+    #   x*     = ((sqrt(b^2 + t) - b) * A_PRECISION) / (8*A_raw)      (exact real)
+    #   b      = WAD - (4*A_raw*(WAD-y))/A_PRECISION
+    #   t      = (4*A_raw*WAD^3)/(A_PRECISION*y)
+    #   b_hat  = WAD - floor(4*A_raw*(WAD-y)/A_PRECISION), |b_hat-b| < 1
+    #   t_hat  = floor(t),                                    |t_hat-t| < 1
+    #   r_hat  = floor(sqrt(b_hat^2 + t_hat))
+    #   x_hat  = floor(((r_hat - b_hat) * A_PRECISION)/(8*A_raw))
+    # Using |d sqrt(b^2+t)/db| <= 1 and |d sqrt(b^2+t)/dt| = 1/(2*sqrt(b^2+t)) << 1:
+    #   |r_hat - sqrt(b^2+t)| < 2
+    # Therefore:
+    #   |x_hat - x*| < 1 + (3*A_PRECISION)/(8*A_raw)
+    #   => for A_raw >= 1:            |x_hat - x*| < 3751 wei
+    #   => for A_raw >= A_PRECISION:  |x_hat - x*| < 2 wei
     b1: int256 = convert(WAD, int256) - convert(4 * A_raw * (WAD - y) // A_PRECISION, int256)
 
     abs_b1: uint256 = convert(abs(b1), uint256)
@@ -114,10 +132,15 @@ def _y_from_bisection(A_raw: uint256, p: uint256) -> uint256:
     for _: uint256 in range(BISECTION_ITERS):
         mid: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
         pm: uint256 = self._p_from_y(A_raw, mid)
+        tol_abs: uint256 = unsafe_div(p, PRICE_TOL_REL)
 
         if pm > p:
+            if unsafe_sub(pm, p) <= tol_abs:
+                return mid
             lo = mid
         else:
+            if unsafe_sub(p, pm) <= tol_abs:
+                return mid
             hi = mid
 
         if unsafe_sub(hi, lo) <= 1:
@@ -125,7 +148,7 @@ def _y_from_bisection(A_raw: uint256, p: uint256) -> uint256:
 
     plo: uint256 = self._p_from_y(A_raw, lo)
     phi: uint256 = self._p_from_y(A_raw, hi)
-    if unsafe_add(plo, phi) >= 2 * p:
+    if unsafe_add(plo, phi) >= 2 * p:  # using plo >= phi
         return hi
     return lo
 

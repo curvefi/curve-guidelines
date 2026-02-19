@@ -3,10 +3,10 @@
 @title StableSwapNGLPOracle
 @author Curve.Fi
 @license MIT
-@notice LP oracle for StableSwap-NG (n=2) reusing lp_oracle_secant math.
+@notice LP oracle for StableSwap-NG (n=2) reusing lp_oracle_bisection math.
 """
 
-import lp_oracle_secant
+import lp_oracle_bisection
 
 
 interface IStableSwapNG:
@@ -58,7 +58,7 @@ def _scaled_A_raw() -> uint256:
 @internal
 @view
 def _portfolio_value() -> uint256:
-    return lp_oracle_secant._portfolio_value_secant(self._scaled_A_raw(), staticcall POOL.price_oracle(0))
+    return lp_oracle_bisection._portfolio_value_secant(self._scaled_A_raw(), staticcall POOL.price_oracle(0))
 
 
 @internal

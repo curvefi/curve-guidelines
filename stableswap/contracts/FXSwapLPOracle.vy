@@ -2,10 +2,10 @@
 """
 @title FXSwapLPOracle
 @notice LP oracle for Twocrypto(FXSwap)-style pools.
-@dev Reuses stable secant solver and adjusts for pool internal price scaling.
+@dev Reuses stable bisection solver and adjusts for pool internal price scaling.
 """
 
-import lp_oracle_secant
+import lp_oracle_bisection
 
 
 interface IFXSwap:
@@ -76,7 +76,7 @@ def portfolio_value() -> uint256:
 @internal
 @view
 def _portfolio_value() -> uint256:
-    return lp_oracle_secant._portfolio_value_secant(self._scaled_A_raw(), self._scaled_price())
+    return lp_oracle_bisection._portfolio_value_secant(self._scaled_A_raw(), self._scaled_price())
 
 
 @internal

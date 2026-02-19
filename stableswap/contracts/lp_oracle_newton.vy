@@ -66,10 +66,7 @@ MAX_A_RAW: constant(uint256) = MAX_A * MAX_A_PRECISION
 
 BISECT_STEPS: constant(uint256) = 7
 NEWTON_STEPS: constant(uint256) = 64
-PRICE_TOL: constant(uint256) = 10**7
-# On domain p_target >= 1e16 (0.01 * WAD):
-#   eps_p_rel <= PRICE_TOL / 1e16
-# For PRICE_TOL = 1e7 => worst-case bound 1e-9 (empirical is much tighter).
+PRICE_TOL_REL: constant(uint256) = 10**6
 
 
 @internal
@@ -79,6 +76,21 @@ def _x_from_y(A_raw: uint256, y: uint256) -> uint256:
     #   4A*x^2 + (4A*(y-1)+1)*x - 1/(4y) = 0
     # Positive root:
     #   x(y) = (-b1 + sqrt(b1^2 + 4A/y)) / (8A), b1 = 1 - 4A*(1-y)
+    #
+    # Error bound for fixed-point rounding (absolute, in output wei):
+    #   x*     = ((sqrt(b^2 + t) - b) * A_PRECISION) / (8*A_raw)      (exact real)
+    #   b      = WAD - (4*A_raw*(WAD-y))/A_PRECISION
+    #   t      = (4*A_raw*WAD^3)/(A_PRECISION*y)
+    #   b_hat  = WAD - floor(4*A_raw*(WAD-y)/A_PRECISION), |b_hat-b| < 1
+    #   t_hat  = floor(t),                                    |t_hat-t| < 1
+    #   r_hat  = floor(sqrt(b_hat^2 + t_hat))
+    #   x_hat  = floor(((r_hat - b_hat) * A_PRECISION)/(8*A_raw))
+    # Using |d sqrt(b^2+t)/db| <= 1 and |d sqrt(b^2+t)/dt| = 1/(2*sqrt(b^2+t)) << 1:
+    #   |r_hat - sqrt(b^2+t)| < 2
+    # Therefore:
+    #   |x_hat - x*| < 1 + (3*A_PRECISION)/(8*A_raw)
+    #   => for A_raw >= 1:            |x_hat - x*| < 3751 wei
+    #   => for A_raw >= A_PRECISION:  |x_hat - x*| < 2 wei
     b1: int256 = convert(WAD, int256) - convert(4 * A_raw * (WAD - y) // A_PRECISION, int256)
 
     abs_b1: uint256 = convert(abs(b1), uint256)
@@ -133,6 +145,7 @@ def _y_from_newton(A_raw: uint256, p: uint256) -> uint256:
             phi = pm
 
     p_i: int256 = convert(p, int256)
+    tol_abs: uint256 = unsafe_div(p, PRICE_TOL_REL)
 
     y: int256 = convert(unsafe_div(unsafe_add(lo, hi), 2), int256)
     gy: int256 = convert(self._p_from_y(A_raw, convert(y, uint256)), int256) - p_i
@@ -144,7 +157,7 @@ def _y_from_newton(A_raw: uint256, p: uint256) -> uint256:
     #   y_new = y - g(y) * (y - y_prev) / (g(y) - g_prev)
     # Then safeguard y2 to stay inside (lo, hi) using mid point as fallback.
     for _: uint256 in range(NEWTON_STEPS):
-        if convert(abs(gy), uint256) <= PRICE_TOL or unsafe_sub(hi, lo) <= 1:
+        if convert(abs(gy), uint256) <= tol_abs or unsafe_sub(hi, lo) <= 1:
             break
 
         y_new: uint256 = unsafe_div(unsafe_add(lo, hi), 2)
