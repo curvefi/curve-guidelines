@@ -259,7 +259,7 @@ def _get_x_y(A_raw: uint256, p: uint256) -> (uint256, uint256):
 
 @internal
 @pure
-def _portfolio_value_secant(A_raw: uint256, p: uint256) -> uint256:
+def _portfolio_value(A_raw: uint256, p: uint256) -> uint256:
     x: uint256 = 0
     y: uint256 = 0
     x, y = self._get_x_y(A_raw, p)
@@ -269,4 +269,4 @@ def _portfolio_value_secant(A_raw: uint256, p: uint256) -> uint256:
 @external
 @pure
 def portfolio_value(_A_raw: uint256, _p: uint256) -> uint256:
-    return self._portfolio_value_secant(_A_raw, _p)
+    return self._portfolio_value(_A_raw, _p)

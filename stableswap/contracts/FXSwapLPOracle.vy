@@ -49,10 +49,10 @@ def __init__(_pool: IFXSwap, _agg: PriceOracle):
 @view
 def _scaled_A_raw() -> uint256:
     # Pool stores A as: A_true * N_COINS**(N_COINS-1) * 10_000.
-    # Secant solver expects: A_true * lp_oracle_secant.A_PRECISION.
+    # Solver expects: A_true * solver.A_PRECISION.
     A_pool: uint256 = staticcall POOL.A()
     return unsafe_div(
-        A_pool * lp_oracle_secant.A_PRECISION,
+        A_pool * lp_oracle_bisection.A_PRECISION,
         N_COINS**(N_COINS-1) * POOL_A_PRECISION
     )
 
@@ -76,7 +76,7 @@ def portfolio_value() -> uint256:
 @internal
 @view
 def _portfolio_value() -> uint256:
-    return lp_oracle_bisection._portfolio_value_secant(self._scaled_A_raw(), self._scaled_price())
+    return lp_oracle_bisection._portfolio_value(self._scaled_A_raw(), self._scaled_price())
 
 
 @internal
@@ -89,8 +89,15 @@ def _lp_price_in_coin0() -> uint256:
 
 @view
 @external
-def lp_price() -> uint256:
-    return self._lp_price_in_coin0()
+def lp_price(i: uint256=0) -> uint256:
+    assert i < N_COINS
+
+    lp_price_in_coin0: uint256 = self._lp_price_in_coin0()
+    if i == 0:
+        return lp_price_in_coin0
+
+    # price_oracle is coin0 per coin1, so convert by multiplying with reciprocal.
+    return lp_price_in_coin0 * PRECISION // staticcall POOL.price_oracle()
 
 
 @view
