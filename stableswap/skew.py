@@ -67,7 +67,7 @@ def _(A, D, StableSwap, copy, n, skew):
     dx = D // 20_000
     dy = 0
 
-    skewed_prices = [10 ** 36 // int((1 + skew.value) * 10 ** 18), int((1 + skew.value) * 10 ** 18)]
+    skewed_prices = [10 ** 18, int((1 + skew.value) * 10 ** 18)]
     pool = StableSwap(A.value, D, n.value, p=skewed_prices, fee=0)
     _p = pool.get_p()
     while _p[0] / 10 ** 18 < MAX_P_FACTOR and 10 ** 18 / _p[0] < MAX_P_FACTOR:

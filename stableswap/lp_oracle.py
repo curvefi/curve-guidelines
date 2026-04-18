@@ -23,8 +23,9 @@ def _():
     import pandas as pd
     import math
     from copy import copy
+    from decimal import Decimal
     from stableswap.simulation import StableSwap
-    return StableSwap, copy, math, mo, np, pd, px
+    return Decimal, StableSwap, copy, math, mo, np, pd, px
 
 
 @app.cell
@@ -37,8 +38,30 @@ def _(mo):
 
 
 @app.cell
-def _(A, mo):
-    mo.md(f"""{A}  \n""")
+def _(mo, n):
+    rates = mo.ui.array(
+        [
+            mo.ui.number(
+                start=0.000001,
+                step=0.000001,
+                value=1.0,
+                label=f"rate[{i}]",
+            )
+            for i in range(n.value)
+        ],
+        label="rates",
+    )
+    return (rates,)
+
+
+@app.cell
+def _(A, mo, n, rates):
+    mo.vstack(
+        [
+            mo.hstack([n, A], justify="start"),
+            rates,
+        ]
+    )
     return
 
 
@@ -46,66 +69,156 @@ def _(A, mo):
 def _(
     A,
     D,
+    Decimal,
     StableSwap,
     copy,
     mo,
     n,
+    pd,
     portfolio_value_bisection,
     portfolio_value_newton,
     portfolio_value_secant,
     px,
+    rates,
 ):
     # Assuming p = price_oracle
-    MAX_P_FACTOR = 1.25  # Factor to limit price changes
+    MAX_P_FACTOR = 10  # Factor to limit price changes
     dx = D // 10_000
     dy = 0
+    rate_values = [
+        int(Decimal(str(rate)) * 10**18)
+        for rate in rates.value
+    ]
 
-    pool = StableSwap(A.value, D, n.value, fee=0)
-    p = pool.get_p()
-    while p[0] / 10 ** 18 < MAX_P_FACTOR and 10 ** 18 / p[0] < MAX_P_FACTOR:
+    def get_underlying_prices(pool):
+        return [10 ** 18] + [int(_p) for _p in pool.get_p()]
+
+    def get_prices(pool, underlying_prices):
+        base_rate = pool.p[0]
+        return [
+            u_price * rate // base_rate
+            for u_price, rate in zip(underlying_prices, pool.p)
+        ]
+
+    def get_relative_prices(prices):
+        return [price * 10 ** 18 // prices[0] for price in prices]
+
+    pool = StableSwap(A.value, D, n.value, p=rate_values, fee=0)
+    underlying_prices = get_underlying_prices(pool)
+    while (
+        underlying_prices[1] / 10 ** 18 < MAX_P_FACTOR
+        and 10 ** 18 / underlying_prices[1] < MAX_P_FACTOR
+    ):
         dy = pool.exchange(0, 1, dx)
-        p = pool.get_p()
-    pool.exchange(1, 0, dy)  # go 1 step back
-    p = pool.get_p()
+        underlying_prices = get_underlying_prices(pool)
+    if dy > 0:
+        pool.exchange(1, 0, dy)  # go 1 step back
+    underlying_prices = get_underlying_prices(pool)
 
     points = []
 
-    while p[0] / 10 ** 18 < MAX_P_FACTOR and 10 ** 18 / p[0] < MAX_P_FACTOR:
+    while (
+        underlying_prices[1] / 10 ** 18 < MAX_P_FACTOR
+        and 10 ** 18 / underlying_prices[1] < MAX_P_FACTOR
+    ):
         pool.exchange(1, 0, dx)
-        p = pool.get_p()
+        underlying_prices = get_underlying_prices(pool)
+        prices_with_rates = get_prices(pool, underlying_prices)
+        relative_prices = get_relative_prices(prices_with_rates)
         points.append({
             "balances": copy(pool.x),
-            "prices": [10 ** 18] + copy(p),
+            "underlying_prices": copy(underlying_prices),
+            "prices": copy(relative_prices),
+            "rates": copy(pool.p),
             "vp": pool.get_virtual_price(),
             "total_supply": copy(pool.tokens),
         })
 
     def real_lp_price(point):
-        return sum([b * p // 10 ** 18 for p, b in zip(point["prices"], point["balances"])]) * 10**18 // point["total_supply"] / 10**18
+        return (
+            sum([b * p for p, b in zip(point["prices"], point["balances"])])
+            // point["total_supply"]
+            / 10**18
+        )
 
     def simplified_lp_price(point):
-        min_p = min(point["prices"])
+        min_p = min(point["underlying_prices"]) * 10**18 // point["rates"][0]
         return min_p * point["vp"] // 10 ** 18 / 10 ** 18
 
     def converge_lp_price(point, method):
         assert n.value == 2
-        return method(A.value, int(point["prices"][1])) * point["vp"] // 10**18 / 10**18
+        return method(A.value, int(point["underlying_prices"][1])) * point["vp"] // point["rates"][0] / 10**18
 
-    plot = mo.ui.plotly(
-        px.line(
-            [{
-                "price": point["prices"][1] / 10 ** 18,
-                "Real": real_lp_price(point),
-                "Simplified": simplified_lp_price(point),
-                "bisection": converge_lp_price(point, portfolio_value_bisection),
-                "secant": converge_lp_price(point, portfolio_value_secant),
-                "newton": converge_lp_price(point, portfolio_value_newton),
-            } for point in points],
-            x="price",
-            y=["Real", "Simplified", "bisection", "secant", "newton"],
-            title="LP Price",
-        )
+    data = []
+    y_columns = ["Real", "Simplified"]
+    if n.value == 2:
+        y_columns += ["bisection", "secant", "newton"]
+
+    for point in points:
+        lp_row = {
+            "price": point["prices"][1] / 10 ** 18,
+            "underlying_price": point["underlying_prices"][1] / 10 ** 18,
+            "Real": real_lp_price(point),
+            "Simplified": simplified_lp_price(point),
+        }
+        for i, balance in enumerate(point["balances"]):
+            lp_row[f"balance_{i}"] = balance / 10 ** 18
+        if n.value == 2:
+            lp_row.update(
+                {
+                    "bisection": converge_lp_price(point, portfolio_value_bisection),
+                    "secant": converge_lp_price(point, portfolio_value_secant),
+                    "newton": converge_lp_price(point, portfolio_value_newton),
+                }
+            )
+        data.append(lp_row)
+
+    plot_df = pd.DataFrame(data)
+    anchor_row = (
+        plot_df[plot_df["underlying_price"] >= 1]
+        .sort_values("underlying_price")
+        .head(1)
     )
+    anchor_simplified = (
+        float(anchor_row["Simplified"].iloc[0])
+        if not anchor_row.empty
+        else None
+    )
+
+    fig = px.line(
+        plot_df,
+        x="underlying_price",
+        y=y_columns,
+        title="LP Price vs Underlying price",
+        custom_data=["underlying_price", "price", *[f"balance_{i}" for i in range(n.value)]],
+        labels={
+            "underlying_price": "Underlying price",
+            "price": "Price with rates",
+            "value": "LP Price",
+        },
+    )
+    if anchor_simplified is not None:
+        fig.add_hline(
+            y=anchor_simplified,
+            line_dash="dash",
+            line_color="gray",
+            annotation_text=f"{anchor_simplified:.6f}",
+            annotation_position="top right",
+        )
+    fig.update_xaxes(title="Underlying price")
+    fig.update_traces(hovertemplate=(
+        "Series: %{fullData.name}<br>"
+        + "Underlying price: %{customdata[0]:.6f}<br>"
+        + "LP Price: %{y:.6f}<br>"
+        + "Price with rates: %{customdata[1]:.6f}"
+        + "".join(
+            f"<br>Balance[{i}]: %{{customdata[{i + 2}]:.6f}}"
+            for i in range(n.value)
+        )
+        + "<extra></extra>"
+    ))
+
+    plot = mo.ui.plotly(fig)
 
     plot
     return
@@ -546,7 +659,6 @@ def _(
         comparison_df,
         gas_storage_ref,
         metrics_display_df,
-        oracles,
         summary_display_df,
     )
 
