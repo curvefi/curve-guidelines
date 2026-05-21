@@ -77,6 +77,7 @@ def _(
     pd,
     portfolio_value_bisection,
     portfolio_value_newton,
+    portfolio_value_newton_alt,
     portfolio_value_secant,
     px,
     rates,
@@ -145,14 +146,18 @@ def _(
         min_p = min(point["underlying_prices"]) * 10**18 // point["rates"][0]
         return min_p * point["vp"] // 10 ** 18 / 10 ** 18
 
-    def converge_lp_price(point, method):
-        assert n.value == 2
-        return method(A.value, int(point["underlying_prices"][1])) * point["vp"] // point["rates"][0] / 10**18
+    def converge_lp_price_result(point, method):
+        value, iterations = method(A.value, int(point["underlying_prices"][1]))
+        return value * point["vp"] // point["rates"][0] / 10**18, iterations
 
     data = []
-    y_columns = ["Real", "Simplified"]
-    if n.value == 2:
-        y_columns += ["bisection", "secant", "newton"]
+    y_columns = ["Real", "Simplified", "bisection", "secant", "newton", "newton_alt"]
+    iteration_columns = [
+        "iterations_bisection",
+        "iterations_secant",
+        "iterations_newton",
+        "iterations_newton_alt",
+    ]
 
     for point in points:
         lp_row = {
@@ -163,14 +168,22 @@ def _(
         }
         for i, balance in enumerate(point["balances"]):
             lp_row[f"balance_{i}"] = balance / 10 ** 18
-        if n.value == 2:
-            lp_row.update(
-                {
-                    "bisection": converge_lp_price(point, portfolio_value_bisection),
-                    "secant": converge_lp_price(point, portfolio_value_secant),
-                    "newton": converge_lp_price(point, portfolio_value_newton),
-                }
-            )
+        bisection_price, bisection_iterations = converge_lp_price_result(point, portfolio_value_bisection)
+        secant_price, secant_iterations = converge_lp_price_result(point, portfolio_value_secant)
+        newton_price, newton_iterations = converge_lp_price_result(point, portfolio_value_newton)
+        newton_alt_price, newton_alt_iterations = converge_lp_price_result(point, portfolio_value_newton_alt)
+        lp_row.update(
+            {
+                "bisection": bisection_price,
+                "secant": secant_price,
+                "newton": newton_price,
+                "newton_alt": newton_alt_price,
+                "iterations_bisection": bisection_iterations,
+                "iterations_secant": secant_iterations,
+                "iterations_newton": newton_iterations,
+                "iterations_newton_alt": newton_alt_iterations,
+            }
+        )
         data.append(lp_row)
 
     plot_df = pd.DataFrame(data)
@@ -219,8 +232,20 @@ def _(
     ))
 
     plot = mo.ui.plotly(fig)
+    iter_fig = px.line(
+        plot_df,
+        x="underlying_price",
+        y=iteration_columns,
+        title="Iterations to abs_tol=1e-6 by method",
+        labels={
+            "underlying_price": "Underlying price",
+            "value": "Iterations",
+        },
+    )
+    iter_plot = mo.ui.plotly(iter_fig)
+    simulation_view = mo.vstack([plot, iter_plot])
 
-    plot
+    simulation_view
     return
 
 
@@ -233,8 +258,8 @@ def _(math):
 
     U256_MAX = 2**256 - 1
 
-    # Строгая безопасная граница для A, чтобы radicand не мог переполнить uint256 в худшем случае.
     A_SAFE_MAX = 84945683565681204819  # ~8.49e19
+    ABS_TOL_Q = 10**12  # 1e-6 in Q-scaled price units
 
     def _isqrt(n: int) -> int:
         return int(math.isqrt(n))
@@ -306,22 +331,25 @@ def _(math):
         return (a * b) // Q
 
 
-    def portfolio_value_bisection(A: int, p: int, *, iters: int = 80) -> int:
+    def portfolio_value_bisection(A: int, p: int, *, abs_tol: int = ABS_TOL_Q, iters: int = 80) -> tuple[int, int]:
         if A <= 0 or A > A_SAFE_MAX:
             raise ValueError(f"A must be in [1, {A_SAFE_MAX}]")
         if p == 0:
             raise ValueError("p!=0")
 
-        # symmetry: solve only for p >= 1, map back for p < 1
         if p < Q:
             p_inv = _inv_price_Q(p)
-            V_inv = portfolio_value_bisection(A, p_inv, iters=iters)   # value in "y units"
-            return _mul_div_Q(p, V_inv)                                # back to "x units"
+            value, iterations = portfolio_value_bisection(A, p_inv, abs_tol=abs_tol, iters=iters)
+            return _mul_div_Q(p, value), iterations
 
         lo, hi = 1, Q - 1
+        iterations = 0
         for _ in range(iters):
+            iterations += 1
             mid = (lo + hi) // 2
             pm = _p_from_s(A, mid)
+            if abs(int(pm) - int(p)) <= abs_tol:
+                return _value_from_s(A, p, mid), iterations
             if pm > p:
                 lo = mid
             else:
@@ -332,10 +360,17 @@ def _(math):
         plo = _p_from_s(A, lo)
         phi = _p_from_s(A, hi)
         sQ = lo if abs(int(plo) - int(p)) <= abs(int(phi) - int(p)) else hi
-        return _value_from_s(A, p, sQ)
+        return _value_from_s(A, p, sQ), iterations
 
 
-    def portfolio_value_secant(A: int, p: int, *, bisect_steps: int = 10, secant_steps: int = 256) -> int:
+    def portfolio_value_secant(
+        A: int,
+        p: int,
+        *,
+        abs_tol: int = ABS_TOL_Q,
+        bisect_steps: int = 10,
+        secant_steps: int = 256,
+    ) -> tuple[int, int]:
         if A <= 0 or A > A_SAFE_MAX:
             raise ValueError(f"A must be in [1, {A_SAFE_MAX}]")
         if p == 0:
@@ -343,16 +378,26 @@ def _(math):
 
         if p < Q:
             p_inv = _inv_price_Q(p)
-            V_inv = portfolio_value_secant(A, p_inv, bisect_steps=bisect_steps, secant_steps=secant_steps)
-            return _mul_div_Q(p, V_inv)
+            value, iterations = portfolio_value_secant(
+                A,
+                p_inv,
+                abs_tol=abs_tol,
+                bisect_steps=bisect_steps,
+                secant_steps=secant_steps,
+            )
+            return _mul_div_Q(p, value), iterations
 
         lo, hi = 1, Q - 1
         plo = _p_from_s(A, lo)
         phi = _p_from_s(A, hi)
+        iterations = 0
 
         for _ in range(bisect_steps):
+            iterations += 1
             mid = (lo + hi) // 2
             pm = _p_from_s(A, mid)
+            if abs(int(pm) - int(p)) <= abs_tol:
+                return _value_from_s(A, p, mid), iterations
             if pm > p:
                 lo, plo = mid, pm
             else:
@@ -363,13 +408,13 @@ def _(math):
         s0, g0 = lo, int(plo) - int(p)
         s1, g1 = hi, int(phi) - int(p)
 
-        if abs(g0) <= 2:
-            return _value_from_s(A, p, s0)
-        if abs(g1) <= 2:
-            return _value_from_s(A, p, s1)
+        if abs(g0) <= abs_tol:
+            return _value_from_s(A, p, s0), iterations
+        if abs(g1) <= abs_tol:
+            return _value_from_s(A, p, s1), iterations
 
-        sQ = (lo + hi) // 2
         for _ in range(secant_steps):
+            iterations += 1
             dg = g1 - g0
             if dg == 0:
                 s2 = (lo + hi) // 2
@@ -389,16 +434,24 @@ def _(math):
 
             s0, g0 = s1, g1
             s1, g1 = s2, g2
-            sQ = s2
 
-            if hi - lo <= 1 or abs(g2) <= 2:
+            if abs(g2) <= abs_tol:
+                return _value_from_s(A, p, s2), iterations
+            if hi - lo <= 1:
                 break
 
         sQ = lo if abs(int(plo) - int(p)) <= abs(int(phi) - int(p)) else hi
-        return _value_from_s(A, p, sQ)
+        return _value_from_s(A, p, sQ), iterations
 
 
-    def portfolio_value_newton(A: int, p: int, *, bisect_steps: int = 10, newton_steps: int = 256) -> int:
+    def portfolio_value_newton(
+        A: int,
+        p: int,
+        *,
+        abs_tol: int = ABS_TOL_Q,
+        bisect_steps: int = 10,
+        newton_steps: int = 256,
+    ) -> tuple[int, int]:
         if A <= 0 or A > A_SAFE_MAX:
             raise ValueError(f"A must be in [1, {A_SAFE_MAX}]")
         if p == 0:
@@ -406,16 +459,26 @@ def _(math):
 
         if p < Q:
             p_inv = _inv_price_Q(p)
-            V_inv = portfolio_value_newton(A, p_inv, bisect_steps=bisect_steps, newton_steps=newton_steps)
-            return _mul_div_Q(p, V_inv)
+            value, iterations = portfolio_value_newton(
+                A,
+                p_inv,
+                abs_tol=abs_tol,
+                bisect_steps=bisect_steps,
+                newton_steps=newton_steps,
+            )
+            return _mul_div_Q(p, value), iterations
 
         lo, hi = 1, Q - 1
         plo = _p_from_s(A, lo)
         phi = _p_from_s(A, hi)
+        iterations = 0
 
         for _ in range(bisect_steps):
+            iterations += 1
             mid = (lo + hi) // 2
             pm = _p_from_s(A, mid)
+            if abs(int(pm) - int(p)) <= abs_tol:
+                return _value_from_s(A, p, mid), iterations
             if pm > p:
                 lo, plo = mid, pm
             else:
@@ -431,8 +494,12 @@ def _(math):
         g_prev = int(plo) - int(p)
 
         for _ in range(newton_steps):
-            if abs(gs) <= 2 or hi - lo <= 1:
+            if abs(gs) <= abs_tol:
+                return _value_from_s(A, p, s), iterations
+            if hi - lo <= 1:
                 break
+
+            iterations += 1
 
             dg = gs - g_prev
             ds = s - s_prev
@@ -457,10 +524,123 @@ def _(math):
             s, gs = s_new, g_new
 
         sQ = lo if abs(int(plo) - int(p)) <= abs(int(phi) - int(p)) else hi
-        return _value_from_s(A, p, sQ)
+        return _value_from_s(A, p, sQ), iterations
+
+
+    def _p_prime_abs(A: int, xQ: int, sQ: int, pQ: int) -> int:
+        xx = xQ * xQ
+        pxy = (pQ * xQ * sQ) // Q
+        p2y2 = (pQ * pQ * sQ * sQ) // Q2
+        if xx + p2y2 <= pxy:
+            return 0
+        n_w2 = xx + p2y2 - pxy
+        bracket = (16 * A * xQ * xQ * sQ) // Q3 + 1
+        xy2_w2 = (xQ * sQ * sQ) // Q
+        d_w2 = xy2_w2 * bracket
+        if d_w2 == 0:
+            return 0
+        return (2 * n_w2 * Q) // d_w2
+
+
+    def _y_initial_guess_newton_alt(A: int, p: int) -> int:
+        if p <= Q:
+            return Q // 2
+        diff = p - Q
+        denom = 16 * A * diff
+        if denom == 0:
+            return Q // 2
+        y0_sq = Q3 // denom
+        y0 = _isqrt(y0_sq)
+        if y0 >= Q // 2:
+            return Q // 2
+        if y0 == 0:
+            return 1
+        return y0
+
+
+    def _y_from_newton_alt(A: int, p: int, *, abs_tol: int = ABS_TOL_Q) -> dict:
+        MAX_NEWTON_ITERS = 64
+        lo = 1
+        hi = Q // 2 + 1
+        sQ = _y_initial_guess_newton_alt(A, p)
+        if sQ <= lo:
+            sQ = lo + 1
+        if sQ >= hi:
+            sQ = hi - 1
+
+        iterations = 0
+
+        for _ in range(MAX_NEWTON_ITERS):
+            iterations += 1
+            xQ = _x_from_s(A, sQ)
+            if xQ == 0:
+                sQ = (lo + hi) // 2
+                continue
+
+            pm = _p_from_s(A, sQ)
+            if pm > p:
+                if pm - p <= abs_tol:
+                    return {
+                        "sQ": sQ,
+                        "solver_iterations": iterations,
+                    }
+                lo = sQ
+            else:
+                if p - pm <= abs_tol:
+                    return {
+                        "sQ": sQ,
+                        "solver_iterations": iterations,
+                    }
+                hi = sQ
+
+            if hi - lo <= 1:
+                return {
+                    "sQ": hi,
+                    "solver_iterations": iterations,
+                }
+
+            ppy = _p_prime_abs(A, xQ, sQ, pm)
+            if ppy == 0:
+                s_new = (lo + hi) // 2
+            elif pm > p:
+                delta = ((pm - p) * Q) // ppy
+                s_new = sQ + delta
+            else:
+                delta = ((p - pm) * Q) // ppy
+                if delta >= sQ:
+                    s_new = (lo + hi) // 2
+                else:
+                    s_new = sQ - delta
+
+            if s_new <= lo or s_new >= hi:
+                s_new = (lo + hi) // 2
+
+            sQ = s_new
+
+        return {
+            "sQ": sQ,
+            "solver_iterations": iterations,
+        }
+
+
+    def portfolio_value_newton_alt(A: int, p: int, *, abs_tol: int = ABS_TOL_Q) -> tuple[int, int]:
+        if A <= 0 or A > A_SAFE_MAX:
+            raise ValueError(f"A must be in [1, {A_SAFE_MAX}]")
+        if p == 0:
+            raise ValueError("p!=0")
+
+        reciprocal = p < Q
+        solve_p = _inv_price_Q(p) if reciprocal else p
+        details = _y_from_newton_alt(A, solve_p, abs_tol=abs_tol)
+        value = _value_from_s(A, solve_p, details["sQ"])
+        if reciprocal:
+            value = _mul_div_Q(p, value)
+
+        return value, details["solver_iterations"]
     return (
         portfolio_value_bisection,
         portfolio_value_newton,
+        portfolio_value_newton_alt,
         portfolio_value_secant,
     )
 
@@ -512,10 +692,6 @@ def _(
     np,
     pd,
 ):
-    import os
-
-    # Keep titanoboa cache local when notebook is run in restricted environments.
-    os.environ.setdefault("XDG_CACHE_HOME", ".cache")
     import boa
 
     WAD = 10**18
@@ -578,6 +754,7 @@ def _(
         "secant": boa.load("stableswap/contracts/lp_oracle_secant.vy"),
         "newton": boa.load("stableswap/contracts/lp_oracle_newton.vy"),
         "brent": boa.load("stableswap/contracts/lp_oracle_brent.vy"),
+        "newton_alt": boa.load("stableswap/contracts/lp_oracle_newton_alt.vy"),
     }
     pool_ref = boa.load("stableswap/contracts/StableSwapMock.vy")
     boa.env.enable_gas_profiling()
