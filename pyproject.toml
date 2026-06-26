@@ -5,7 +5,7 @@ description = "Guidelines for Curve project/parameters setups"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "marimo>=0.15.2",
+    "marimo>=0.23.9",
     "pandas>=2.3.3",
     "plotly>=6.3.1",
     "pytest-xdist>=3.8.0",
