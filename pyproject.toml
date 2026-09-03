@@ -5,9 +5,14 @@ description = "Guidelines for Curve project/parameters setups"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "curve-voting-lib",
     "marimo>=0.15.2",
     "pandas>=2.3.3",
     "plotly>=6.3.1",
     "pytest-xdist>=3.8.0",
     "titanoboa>=0.2.7",
+    "web3>=8.0.0",
 ]
+
+[tool.uv.sources]
+curve-voting-lib = { git = "https://github.com/curvefi/curve-voting-lib.git" }

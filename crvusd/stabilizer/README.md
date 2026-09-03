@@ -25,8 +25,8 @@
 
 ## Offboarding
 Create a governance vote to:
-	1. Remove PK from regulator via `PegKeeperRegulator.remove_peg_keepers([pk]).
-	2. Add PK to `OffboardingRegulator.add_peg_keepers([pk]).
+	1. Remove PK from regulator via `PegKeeperRegulator.remove_peg_keepers([pk])`.
+	2. Add PK to `OffboardingRegulator.add_peg_keepers([pk])`.
 	3. Update regulator `PegKeeper.set_new_regulator(offboarding)`.
 	4. Remove from monetary policies.
 	5. Remove from price aggregators (if required).

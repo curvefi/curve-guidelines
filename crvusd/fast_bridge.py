@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.11.26"
+__generated_with = "0.15.2"
 app = marimo.App(width="medium")
 
 
@@ -11,7 +11,7 @@ def _():
     import os
     import requests
     from web3 import Web3
-    return Web3, mo, np, os, requests
+    return Web3, mo, requests
 
 
 @app.cell
@@ -158,26 +158,16 @@ def _(CHAINS, Web3, mo, requests):
     mo.md(
         header + "\n".join(rows)
     )
-    return (
-        chain_name,
-        get_default_chain_metrics,
-        get_defillama_metrics,
-        get_metrics,
-        get_total_supply,
-        header,
-        metrics,
-        row,
-        rows,
-    )
+    return
 
 
 @app.cell
 def _(mo):
     mo.md(
         """
-        ## Per-chain statistics\n
-        Data is retrived from backend services, so would be updated on demand
-        """
+    ## Per-chain statistics\n
+    Data is retrived from backend services, so would be updated on demand
+    """
     )
     return
 
@@ -190,7 +180,7 @@ def _(CHAINS, mo):
 
 
 @app.cell
-def _(__file__, chain, mo):
+def _(chain, mo):
     from pathlib import Path
 
     NOTEBOOK_DIR = Path(__file__).parent
@@ -200,7 +190,7 @@ def _(__file__, chain, mo):
     tvl = mo.image(src=NOTEBOOK_DIR / "imgs" / chain.value / "tvl.png")
 
     mo.md(f"{price} {volume} {tvl}")
-    return NOTEBOOK_DIR, Path, price, tvl, volume
+    return
 
 
 @app.cell
@@ -228,7 +218,7 @@ def _(debt_ceiling, mo):
         f"Limit per day (L2): **{per_day:_}**  \n"
         f"overflow of {per_day * 7 - debt_ceiling.value:_} per week  \n"
     )
-    return (per_day,)
+    return
 
 
 @app.cell
